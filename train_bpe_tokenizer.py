@@ -9,7 +9,13 @@ from tokenizers import (
 from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
 
+# need to load the following DS's 
+# oscar, cc100, wiki, github_issues, github_code
 # todo add more DS For non-US native languages
+data_sets = [
+    "codeparrot/github-code",
+    
+]
 ds = load_dataset("bigcode/the-stack-march-sample-special-tokens-stripped", split="train")
 
 SPECIAL_TOKENS = [
