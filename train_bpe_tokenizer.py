@@ -18,7 +18,7 @@ data_sets = [
     "bigcode/the-stack-github-issues",
     "iohadrubin/wikitext-103-raw-v1",
     # "oscar-corpus/mOSCAR", ace_Latn
-    "statmt/cc100"
+    # "statmt/cc100" trust_remote_code
 ]
 
 SPECIAL_TOKENS = [
