@@ -1,3 +1,6 @@
 datasets
 transformers
 tokenizers
+torch 
+torchvision 
+torchaudio
