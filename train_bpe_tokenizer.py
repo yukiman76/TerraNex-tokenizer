@@ -9,7 +9,9 @@ from tokenizers import (
 from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
 
+# todo add more DS For non-US native languages
 ds = load_dataset("bigcode/the-stack-march-sample-special-tokens-stripped", split="train")
+
 SPECIAL_TOKENS = [
     "<|endoftext|>",
     "<fim_prefix>",
@@ -61,3 +63,4 @@ tokenizer_wrapper = GPT2TokenizerFast(
     unk_token=SPECIAL_TOKENS[0]
 )
 
+tokenizer_wrapper.save_pretrained('./TerraNex-tokenizer')
