@@ -36,7 +36,10 @@ SPECIAL_TOKENS = [
 
 def batch_iterator(dataset, batch_size=1000): # BATCH SIZE HAS TO DIVIDE NUM_ROWS
     for i in range(0, len(dataset), batch_size):
-        yield dataset.select(range(i, i + batch_size))["content"]
+        iend = i + batch_size
+        if iend > len(dataset):
+            iend = len(dataset)
+        yield dataset.select(range(i, iend))["content"]
 
 VOCAB_SIZE = 49_152
 
