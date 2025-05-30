@@ -1,6 +1,8 @@
-datasets
-transformers
-tokenizers
-torch 
-torchvision 
-torchaudio
+click>=8.0.0
+tqdm>=4.64.0
+transformers>=4.32.0
+datasets>=2.15.0
+tokenizers>=0.14.0
+torch>=2.0.0
+numpy>=1.22.0
+requests>=2.28.0
