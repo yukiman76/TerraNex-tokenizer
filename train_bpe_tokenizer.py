@@ -14,7 +14,7 @@ import itertools
 # todo add more DS For non-US native languages
 data_sets = [
     "bigcode/the-stack-march-sample-special-tokens-stripped",
-    "codeparrot/github-code",
+    # "codeparrot/github-code",
     "bigcode/the-stack-github-issues",
     "iohadrubin/wikitext-103-raw-v1",
     "oscar-corpus/mOSCAR",
