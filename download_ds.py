@@ -3,10 +3,10 @@ from datasets import load_dataset, DownloadConfig
 download_config = DownloadConfig(resume_download=True, max_retries=3)
 
 data_sets = [
-    # "bigcode/the-stack-march-sample-special-tokens-stripped",  # 1.1G
-    # "codeparrot/github-code",  # 1.1 TB
-    # "bigcode/the-stack-github-issues",  # 66.6 G
-    # "iohadrubin/wikitext-103-raw-v1",  # 310M
+    "bigcode/the-stack-march-sample-special-tokens-stripped",  # 1.1G
+    "codeparrot/github-code",  # 1.1 TB
+    "bigcode/the-stack-github-issues",  # 66.6 G
+    "iohadrubin/wikitext-103-raw-v1",  # 310M
 ]
 
 # download entire DS
