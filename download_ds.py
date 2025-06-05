@@ -16,7 +16,7 @@ for ds in data_sets:
                      trust_remote_code=True,
                      download_config=download_config,
                      num_proc=20,        
-                     cache_dir="./datasets")
+                     data_dir="./datasets")
 
 langs = ['swe_Latn', 'eng_Latn', 'spa_Latn', 'deu_Latn', 'cym_Latn', 'dan_Latn', 
          'fra_Latn', 'ita_Latn', 'nld_Latn', 'nno_Latn', 'nob_Latn']
@@ -30,7 +30,7 @@ for lang in langs:
         trust_remote_code=True,
         download_config=download_config,
         num_proc=1,
-        cache_dir="./datasets"
+        data_dir="./datasets"
     )
 
 langs = ["sv", "en", "es", "de", "cy", "da", "fr", "it", "la", "nl", "no"]
@@ -44,5 +44,5 @@ for lang in langs:
         trust_remote_code=True,
         download_config=download_config,
         num_proc=1,
-        cache_dir="./datasets"
+        data_dir="./datasets"
     )
