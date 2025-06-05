@@ -1,10 +1,10 @@
 data_sets = [
-    "bigcode/the-stack-march-sample-special-tokens-stripped",
-    # "codeparrot/github-code",
-    "bigcode/the-stack-github-issues",
-    "iohadrubin/wikitext-103-raw-v1",
-    # "oscar-corpus/mOSCAR", ace_Latn
-    # "statmt/cc100" trust_remote_code
+    "bigcode/the-stack-march-sample-special-tokens-stripped", #1.1G
+    # "codeparrot/github-code", # 1.1 TB
+    "bigcode/the-stack-github-issues", #66.6 G
+    "iohadrubin/wikitext-103-raw-v1", # 310M
+    # "oscar-corpus/mOSCAR", #190G
+    # "statmt/cc100" trust_remote_cod# 200G
 ]
 # Open
 huggingface-cli download "bigcode/the-stack-march-sample-special-tokens-stripped" --repo-type dataset
@@ -22,3 +22,16 @@ huggingface-cli download "codeparrot/github-code" --repo-type dataset
 
 huggingface-cli download "oscar-corpus/mOSCAR" --repo-type dataset
 huggingface-cli download "statmt/cc100" --repo-type dataset
+
+
+sv: Swedish (21G)
+en: English (82G)
+es: Spanish (14G)
+de: German (18G)
+cy: Welsh (179M)
+da: Danish (12G)
+fr: French (14G) ?
+it: Italian (7.8G) ?
+la: Latin (609M)
+nl: Dutch (7.9G)
+no: Norwegian (13G)

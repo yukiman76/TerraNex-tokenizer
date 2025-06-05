@@ -3,6 +3,7 @@ set -e
 
 # Optionally activate your conda environment
 CONDA_ENV="tokenizer-env"
+CONDA_ENV="TerraNex"
 if command -v conda &> /dev/null; then
     echo "Activating conda environment: $CONDA_ENV"
     source "$(conda info --base)/etc/profile.d/conda.sh"
