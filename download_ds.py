@@ -11,12 +11,14 @@ data_sets = [
 ]
 
 for ds in data_sets:
+    print(f"Downloading  {ds}")
     _ = load_dataset(ds, trust_remote_code=True, num_proc=20)
 
 langs = ["sv", "en", "es", "de", "cy", "da", "fr", "it", "la", "nl", "no"]
 
 # "statmt/cc100" trust_remote_cod# 200G
 for lang in langs:
+    print(f"statmt/cc100  {lang}")
     _ = load_dataset(
         "statmt/cc100", 
         name=lang, 
