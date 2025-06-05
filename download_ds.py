@@ -12,7 +12,11 @@ data_sets = [
 # download entire DS
 for ds in data_sets:
     print(f"Downloading  {ds}")
-    _ = load_dataset(ds, trust_remote_code=True, num_proc=20)
+    _ = load_dataset(ds, 
+                     trust_remote_code=True,
+                     download_config=download_config,
+                     num_proc=20,        
+                     cache_dir="./datasets")
 
 langs = ['swe_Latn', 'eng_Latn', 'spa_Latn', 'deu_Latn', 'cym_Latn', 'dan_Latn', 
          'fra_Latn', 'ita_Latn', 'nld_Latn', 'nno_Latn', 'nob_Latn']
@@ -26,6 +30,7 @@ for lang in langs:
         trust_remote_code=True,
         download_config=download_config,
         num_proc=1,
+        cache_dir="./datasets"
     )
 
 langs = ["sv", "en", "es", "de", "cy", "da", "fr", "it", "la", "nl", "no"]
@@ -39,4 +44,5 @@ for lang in langs:
         trust_remote_code=True,
         download_config=download_config,
         num_proc=1,
+        cache_dir="./datasets"
     )
