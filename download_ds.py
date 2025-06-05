@@ -26,7 +26,6 @@ for lang in langs:
         trust_remote_code=True,
         download_config=download_config,
         num_proc=1,
-        max_retries=3,
     )
 
 langs = ["sv", "en", "es", "de", "cy", "da", "fr", "it", "la", "nl", "no"]
@@ -40,5 +39,4 @@ for lang in langs:
         trust_remote_code=True,
         download_config=download_config,
         num_proc=1,
-        max_retries=3,
     )
