@@ -22,7 +22,7 @@ for lang in langs:
     print(f"oscar-corpus/mOSCAR  {lang}")
     _ = load_dataset(
        "oscar-corpus/mOSCAR",
-        name=lang,
+        lang,
         trust_remote_code=True,
         download_config=download_config,
         num_proc=1,
