@@ -1,6 +1,6 @@
 from datasets import load_dataset, DownloadConfig
 
-download_config = DownloadConfig(timeout=600.0) # Timeout in seconds
+download_config = DownloadConfig(resume_download=True, max_retries=3) 
 
 data_sets = [
     "bigcode/the-stack-march-sample-special-tokens-stripped",  # 1.1G
@@ -24,5 +24,6 @@ for lang in langs:
         name=lang, 
         trust_remote_code=True, 
         download_config=download_config,
-        num_proc=1
+        num_proc=1,
+        max_retries=3
     )
