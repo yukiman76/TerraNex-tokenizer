@@ -1,0 +1,92 @@
+# Tokenizer validation configuration
+
+# Paths
+tokenizer_path: "european_tokenizer"
+output_dir: "tokenizer_analysis"
+log_dir: "logs"
+temp_dir: "temp"  # Directory for temporary files
+
+# Processing settings
+sample_size: 100
+max_workers: 4
+z_threshold: 2.0
+retry_attempts: 3  # Number of retries for sample loading
+retry_delay: 5  # Delay between retries in seconds
+
+# Dataset settings
+fallback_datasets:  # Alternative datasets to try if primary fails
+  - "oscar-corpus/mOSCAR"
+  - "statmt/cc100"
+  - "wmt19"
+
+# Visualization settings
+dpi: 300
+figure_size:
+  boxplot: [15, 6]
+  heatmap: [12, 8]
+  scatter: [12, 8]
+style:
+  theme: "whitegrid"
+  context: "notebook"
+  font_scale: 1.2
+  palette: "YlOrRd"
+
+# Output formats
+output_formats:
+  - "json"
+  - "html"
+  - "csv"
+  - "md"
+
+# Languages to validate
+languages:
+  - de  # German
+  - fr  # French
+  - es  # Spanish
+  - it  # Italian
+  - nl  # Dutch
+  - pl  # Polish
+  - pt  # Portuguese
+  - ru  # Russian
+  - sv  # Swedish
+  - da  # Danish
+  - fi  # Finnish
+  - no  # Norwegian
+  - cs  # Czech
+  - hu  # Hungarian
+  - ro  # Romanian
+  - bg  # Bulgarian
+  - el  # Greek
+  - hr  # Croatian
+  - sk  # Slovak
+  - sl  # Slovenian
+
+# Logging settings
+logging:
+  level: INFO  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "%(asctime)s - %(levelname)s - %(message)s"
+  file_format: "tokenizer_validation_%Y%m%d_%H%M%S.log"
+  max_size: 10485760  # 10MB
+  backup_count: 5
+  console_level: INFO
+  file_level: DEBUG
+
+# Metrics to compute
+metrics:
+  - "tokens_per_char"
+  - "char_coverage"
+  - "token_length"
+  - "anomaly_detection"
+  - "vocabulary_coverage"
+
+# Anomaly detection settings
+anomaly_detection:
+  z_threshold: 2.0
+  min_samples: 10
+  max_anomaly_ratio: 0.1
+
+# Resource management
+resource_limits:
+  max_memory_mb: 4096
+  max_cpu_percent: 80
+  cleanup_on_exit: true 
