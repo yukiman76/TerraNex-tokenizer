@@ -5,7 +5,7 @@ sample_size: 50  # Reduced sample size for testing
 max_workers: 2
 z_threshold: 2.0
 languages:
-  - "swe"  # Base language code for Swedish
+  - "swe_Latn"  # Base language code for Swedish
 
 logging:
   max_size: 10485760
