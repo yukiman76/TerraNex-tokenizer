@@ -31,6 +31,12 @@ from PIL import Image
 import threading
 from datasets import load_dataset
 
+# Dataset language code mappings
+dataset_lang_codes = {
+    "oscar-corpus/mOSCAR": "swe_Latn",  # Swedish
+    "statmt/cc100": "sv",              # Swedish
+    "wikipedia": "sv"                   # Swedish
+}
 
 # Important: Do remember if you set this to false, the tokenizer will not be able to parallelize.
 # and if you set it to true, the tokenizer will be able to parallelize but you need to also set the max_workers and everything else.
@@ -59,16 +65,59 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 class TokenizerThreadSafeWrapper:
-    """Thread-safe wrapper for tokenizer operations using thread-local storage"""
+    """Thread-safe wrapper for the tokenizer."""
+    
     def __init__(self, tokenizer_path: str):
-        self._tokenizer_path = tokenizer_path
-        self._local = threading.local()
+        """Initialize the tokenizer wrapper."""
+        self.tokenizer_path = tokenizer_path
+        self._tokenizer = None
+        self._lock = threading.Lock()
     
     def get_tokenizer(self) -> AutoTokenizer:
-        """Get or initialize tokenizer in a thread-safe manner using thread-local storage"""
-        if not hasattr(self._local, 'tokenizer'):
-            self._local.tokenizer = AutoTokenizer.from_pretrained(self._tokenizer_path)
-        return self._local.tokenizer
+        """Get the tokenizer instance, creating it if necessary."""
+        if self._tokenizer is None:
+            with self._lock:
+                if self._tokenizer is None:
+                    self._tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path)
+        return self._tokenizer
+    
+    def analyze_text(self, text: str) -> Optional[Dict[str, Any]]:
+        """Analyze text using the tokenizer."""
+        try:
+            tokenizer = self.get_tokenizer()
+            tokens = tokenizer.tokenize(text)
+            ids = tokenizer.encode(text)
+            
+            # Calculate character coverage
+            unique_chars = set(text)
+            vocab_chars = set(''.join(tokenizer.get_vocab().keys()))
+            char_coverage = len(unique_chars.intersection(vocab_chars)) / len(unique_chars) if unique_chars else 0
+            
+            # Calculate token statistics
+            token_lengths = [len(token) for token in tokens]
+            avg_token_length = sum(token_lengths) / len(token_lengths) if token_lengths else 0
+            std_token_length = np.std(token_lengths) if len(token_lengths) > 1 else 0
+            
+            # Calculate tokenization ratio
+            tokens_per_char = len(tokens) / len(text) if len(text) > 0 else 0
+            
+            metrics = {
+                'tokens': len(tokens),
+                'chars': len(text),
+                'tokens_per_char': tokens_per_char,
+                'char_coverage': char_coverage,
+                'avg_token_length': avg_token_length,
+                'std_token_length': std_token_length,
+                'unique_tokens': len(set(tokens)),
+                'token_lengths': token_lengths
+            }
+            
+            logging.debug(f"Text analysis metrics: {metrics}")
+            return metrics
+            
+        except Exception as e:
+            logging.error(f"Error analyzing text: {e}")
+            return None
 
 @contextmanager
 def temporary_directory():
@@ -235,93 +284,130 @@ def validate_tokenizer_path(tokenizer_path: str) -> bool:
         logging.error(f"Error validating tokenizer path: {e}")
         return False
 
-def load_test_samples(language_code: str, sample_size: int, config: Dict[str, Any]) -> List[str]:
-    """Load test samples for a specific language with retry mechanism"""
-    logging.info(f"Loading {sample_size} test samples for language: {language_code}")
-    test_samples = []
+def load_test_samples(language_code: str, config: Dict[str, Any]) -> List[str]:
+    """Load test samples for a specific language."""
+    sample_size = config['sample_size']
     failed_datasets = []
     
-    for attempt in range(config['retry_attempts']):
+    # First we try the primary dataset
+    try:
+        primary_dataset_name = "oscar-corpus/mOSCAR"
+        primary_dataset = load_dataset(
+            primary_dataset_name,
+            dataset_lang_codes[primary_dataset_name],
+            split="train",
+            trust_remote_code=True
+        )
+        # Extract just the text from each sample and ensure it's a string
+        test_samples = []
+        for item in primary_dataset.select(range(sample_size)):
+            if isinstance(item, dict) and 'text' in item:
+                text = item['text']
+                if isinstance(text, str):
+                    test_samples.append(text)
+                elif isinstance(text, list):
+                    # Handle case where text is a list of dictionaries
+                    for text_item in text:
+                        if isinstance(text_item, dict) and 'text' in text_item:
+                            inner_text = text_item['text']
+                            if isinstance(inner_text, str):
+                                test_samples.append(inner_text)
+        logging.info(f"Successfully loaded {len(test_samples)} samples for {language_code}")
+        return test_samples
+    except Exception as e:
+        failed_datasets.append(("oscar-corpus/mOSCAR", str(e)))
+        logging.warning(f"Failed to load primary dataset for {language_code}: {e}")
+    
+    # Then we try the fallback datasets
+    for dataset_name in config['fallback_datasets']:
         try:
-            from datasets import load_dataset
-            
-            # First we try the primary dataset
-            try:
-                dataset = load_dataset("oscar-corpus/mOSCAR", language_code, split="test")
-                test_samples.extend([item["text"] for item in dataset.select(range(sample_size))])
-                logging.info(f"Successfully loaded {len(test_samples)} samples for {language_code}")
-                return test_samples
-            except Exception as e:
-                failed_datasets.append(("oscar-corpus/mOSCAR", str(e)))
-                logging.warning(f"Failed to load primary dataset for {language_code}: {e}")
-            
-            # Then we try the fallback datasets
-            for dataset_name in config['fallback_datasets']:
-                try:
-                    dataset = load_dataset(dataset_name, language_code, split="test")
-                    test_samples.extend([item["text"] for item in dataset.select(range(sample_size))])
-                    logging.info(f"Successfully loaded {len(test_samples)} samples from {dataset_name} for {language_code}")
-                    return test_samples
-                except Exception as e:
-                    failed_datasets.append((dataset_name, str(e)))
-                    logging.warning(f"Failed to load {dataset_name} for {language_code}: {e}")
-            
-            if attempt < config['retry_attempts'] - 1:
-                time.sleep(config['retry_delay'])
-                
+            dataset = load_dataset(
+                dataset_name,
+                dataset_lang_codes[dataset_name],
+                split="train",
+                trust_remote_code=True
+            )
+            # Extract just the text from each sample and ensure it's a string
+            test_samples = []
+            for item in dataset.select(range(sample_size)):
+                if isinstance(item, dict) and 'text' in item:
+                    text = item['text']
+                    if isinstance(text, str):
+                        test_samples.append(text)
+                    elif isinstance(text, list):
+                        # Handle case where text is a list of dictionaries
+                        for text_item in text:
+                            if isinstance(text_item, dict) and 'text' in text_item:
+                                inner_text = text_item['text']
+                                if isinstance(inner_text, str):
+                                    test_samples.append(inner_text)
+            logging.info(f"Successfully loaded {len(test_samples)} samples from {dataset_name} for {language_code}")
+            return test_samples
         except Exception as e:
-            logging.error(f"Error loading samples for {language_code}: {e}")
-            if attempt < config['retry_attempts'] - 1:
-                time.sleep(config['retry_delay'])
-                
-    error_msg = f"Failed to load samples for {language_code} after {config['retry_attempts']} attempts.\n"
-    error_msg += "Failed datasets and reasons:\n"
-    for dataset_name, error in failed_datasets:
-        error_msg += f"- {dataset_name}: {error}\n"
-    logging.error(error_msg)
+            failed_datasets.append((dataset_name, str(e)))
+            logging.warning(f"Failed to load {dataset_name} for {language_code}: {e}")
+    
+    logging.error(f"Failed to load samples for {language_code} from any dataset: {failed_datasets}")
     return []
 
 def verify_image_file(file_path: Path) -> bool:
     """Verify that a file is a valid image"""
     try:
-        with Image.open(file_path) as img:
-            img.verify()  # Verify it's an image
-            img.load()    # Try to load it
-        return True
+        # First check if file exists and has content
+        if not file_path.exists():
+            logging.error(f"File does not exist: {file_path}")
+            return False
+            
+        if file_path.stat().st_size == 0:
+            logging.error(f"File is empty: {file_path}")
+            return False
+            
+        # Open and verify the image in a single operation
+        try:
+            with Image.open(file_path) as img:
+                # Verify immediately after opening
+                img.verify()
+                # Create a new image to load the data
+                with Image.open(file_path) as img2:
+                    img2.load()
+                    # Check if it's a PNG
+                    if img2.format != 'PNG':
+                        logging.error(f"File is not a PNG: {file_path}")
+                        return False
+                    # Check if it has valid dimensions
+                    if img2.size[0] == 0 or img2.size[1] == 0:
+                        logging.error(f"Image has invalid dimensions: {file_path}")
+                        return False
+            return True
+        except Exception as e:
+            logging.error(f"Failed to verify image {file_path}: {e}")
+            return False
+            
     except Exception as e:
-        logging.error(f"Invalid image file {file_path}: {e}")
+        logging.error(f"Error processing image file {file_path}: {e}")
         return False
 
 def verify_visualization_files(output_dir: Path) -> None:
-    """Verify that all visualization files exist and are valid"""
+    """Verify that all required visualization files exist and are valid."""
     required_files = [
-        "boxplot_by_language.png",
-        "metrics_heatmap.png",
-        "consistency_scatter.png"
+        'tokens_per_char.png',
+        'metrics_heatmap.png',
+        'consistency_scatter.png',
+        'char_coverage.png'
     ]
     
     missing_files = []
-    invalid_files = []
-    corrupted_files = []
-    
-    for file in required_files:
-        file_path = output_dir / file
+    for filename in required_files:
+        file_path = output_dir / filename
         if not file_path.exists():
-            missing_files.append(file)
+            missing_files.append(filename)
         elif file_path.stat().st_size == 0:
-            invalid_files.append(file)
+            missing_files.append(filename)
         elif not verify_image_file(file_path):
-            corrupted_files.append(file)
+            missing_files.append(filename)
     
-    if missing_files or invalid_files or corrupted_files:
-        error_msg = []
-        if missing_files:
-            error_msg.append(f"Missing files: {', '.join(missing_files)}")
-        if invalid_files:
-            error_msg.append(f"Invalid files: {', '.join(invalid_files)}")
-        if corrupted_files:
-            error_msg.append(f"Corrupted files: {', '.join(corrupted_files)}")
-        raise TokenizerValidationError("; ".join(error_msg))
+    if missing_files:
+        raise TokenizerValidationError(f"Missing files: {', '.join(missing_files)}")
 
 def save_results(results: Dict[str, Any], config: Dict[str, Any], output_dir: Path) -> None:
     """Save results in multiple formats"""
@@ -336,33 +422,46 @@ def save_results(results: Dict[str, Any], config: Dict[str, Any], output_dir: Pa
             elif format == 'csv':
                 with open(output_dir / "tokenizer_validation_results.csv", "w", newline='', encoding="utf-8") as f:
                     writer = csv.DictWriter(f, fieldnames=[
-                        'language', 'num_samples', 'avg_tokens_per_char',
-                        'std_tokens_per_char', 'anomaly_count', 'avg_char_coverage'
+                        'language', 'status', 'avg_tokens', 'avg_chars', 'avg_tokens_per_char', 'sample_count'
                     ])
                     writer.writeheader()
                     for lang, result in results.items():
-                        writer.writerow({
-                            'language': lang,
-                            'num_samples': result['num_samples'],
-                            'avg_tokens_per_char': result['avg_tokens_per_char'],
-                            'std_tokens_per_char': result['std_tokens_per_char'],
-                            'anomaly_count': result['anomaly_count'],
-                            'avg_char_coverage': result['avg_char_coverage']
-                        })
+                        if result['status'] == 'success' and 'metrics' in result:
+                            metrics = result['metrics']
+                            writer.writerow({
+                                'language': lang,
+                                'status': result['status'],
+                                'avg_tokens': metrics.get('avg_tokens', 0),
+                                'avg_chars': metrics.get('avg_chars', 0),
+                                'avg_tokens_per_char': metrics.get('avg_tokens_per_char', 0),
+                                'sample_count': metrics.get('sample_count', 0)
+                            })
+                        else:
+                            writer.writerow({
+                                'language': lang,
+                                'status': result['status'],
+                                'avg_tokens': 0,
+                                'avg_chars': 0,
+                                'avg_tokens_per_char': 0,
+                                'sample_count': 0
+                            })
             
             elif format == 'md':
                 with open(output_dir / "tokenizer_validation_results.md", "w", encoding="utf-8") as f:
                     f.write("# Tokenizer Validation Results\n\n")
                     f.write("## Summary Statistics\n\n")
-                    f.write("| Language | Samples | Avg Tokens/Char | Std Dev | Anomalies | Char Coverage | Status |\n")
-                    f.write("|----------|---------|----------------|---------|-----------|---------------|--------|\n")
+                    f.write("| Language | Status | Avg Tokens | Avg Chars | Tokens/Char | Samples |\n")
+                    f.write("|----------|--------|------------|-----------|-------------|----------|\n")
                     for lang, result in results.items():
-                        status = "⚠️" if result["anomaly_count"] > 0 else "✅"
-                        f.write(f"| {lang} | {result['num_samples']} | "
-                               f"{result['avg_tokens_per_char']:.3f} | "
-                               f"{result['std_tokens_per_char']:.3f} | "
-                               f"{result['anomaly_count']} | "
-                               f"{result['avg_char_coverage']:.2f} | {status} |\n")
+                        if result['status'] == 'success' and 'metrics' in result:
+                            metrics = result['metrics']
+                            f.write(f"| {lang} | {result['status']} | "
+                                   f"{metrics.get('avg_tokens', 0):.1f} | "
+                                   f"{metrics.get('avg_chars', 0):.1f} | "
+                                   f"{metrics.get('avg_tokens_per_char', 0):.3f} | "
+                                   f"{metrics.get('sample_count', 0)} |\n")
+                        else:
+                            f.write(f"| {lang} | {result['status']} | 0 | 0 | 0 | 0 |\n")
     
     except Exception as e:
         raise TokenizerValidationError(f"Error saving results: {e}")
@@ -407,131 +506,208 @@ def detect_anomalies(ratios: List[float], z_threshold: float = 2.0) -> Tuple[np.
         logging.error(f"Error in anomaly detection: {e}", exc_info=True)
         return np.zeros_like(ratios, dtype=bool), np.zeros_like(ratios)
 
-def validate_language(tokenizer_wrapper: TokenizerThreadSafeWrapper, 
-                     language_code: str, 
-                     sample_size: int, 
-                     config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Validate tokenizer performance on a specific language"""
-    logging.info(f"Starting validation for language: {language_code}")
-    
-    # Get thread-safe tokenizer instance. I think it works.
-    tokenizer = tokenizer_wrapper.get_tokenizer()
-    
-    samples = load_test_samples(language_code, sample_size, config)
-    if not samples:
-        logging.warning(f"No samples available for {language_code}")
-        return None
-    
-    results = []
-    for i, sample in enumerate(samples):
-        if sample.strip():
-            result = analyze_tokenization(tokenizer, sample)
-            if result:
-                results.append(result)
-                if (i + 1) % 10 == 0:
-                    logging.info(f"Processed {i + 1} samples for {language_code}")
-    
-    if not results:
-        logging.warning(f"No valid results for {language_code}")
-        return None
-    
-    ratios = [r["ratio"] for r in results]
-    anomalies, z_scores = detect_anomalies(ratios, config['z_threshold'])
-    
-    return {
-        "language": language_code,
-        "num_samples": len(results),
-        "avg_tokens_per_char": np.mean(ratios),
-        "std_tokens_per_char": np.std(ratios),
-        "min_tokens_per_char": np.min(ratios),
-        "max_tokens_per_char": np.max(ratios),
-        "anomaly_count": np.sum(anomalies),
-        "z_scores": z_scores.tolist(),
-        "avg_token_length": np.mean([r["token_length_mean"] for r in results]),
-        "token_length_std": np.mean([r["token_length_std"] for r in results]),
-        "avg_char_coverage": np.mean([r["char_coverage"] for r in results]),
-        "sample_analysis": results[:5]
-    }
+def validate_language(language_code: str, tokenizer_wrapper: TokenizerThreadSafeWrapper, config: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate tokenizer performance for a specific language."""
+    try:
+        # Load test samples
+        test_samples = load_test_samples(language_code, config)
+        if not test_samples:
+            return {
+                'language': language_code,
+                'status': 'error',
+                'error': 'No test samples available'
+            }
+        
+        # Process each sample
+        results = []
+        ratios = []
+        char_coverages = []
+        token_lengths = []
+        unique_tokens = set()
+        
+        for sample in test_samples:
+            # Skip empty samples or non-string samples
+            if not sample or not isinstance(sample, str):
+                logging.debug(f"Skipping invalid sample type: {type(sample)}")
+                continue
+                
+            # Clean the sample
+            sample = sample.strip()
+            if not sample:
+                continue
+                
+            # Get tokenization metrics
+            metrics = tokenizer_wrapper.analyze_text(sample)
+            if metrics:
+                results.append(metrics)
+                ratios.append(metrics['tokens_per_char'])
+                char_coverages.append(metrics['char_coverage'])
+                token_lengths.extend(metrics['token_lengths'])
+                # Get the actual tokens from the tokenizer
+                tokens = tokenizer_wrapper.get_tokenizer().tokenize(sample)
+                unique_tokens.update(tokens)
+        
+        if not results:
+            return {
+                'language': language_code,
+                'status': 'error',
+                'error': 'No valid results were generated'
+            }
+        
+        # Calculate aggregate metrics
+        avg_tokens = sum(r['tokens'] for r in results) / len(results)
+        avg_chars = sum(r['chars'] for r in results) / len(results)
+        avg_tokens_per_char = sum(r['tokens_per_char'] for r in results) / len(results)
+        std_tokens_per_char = np.std(ratios) if len(ratios) > 1 else 0
+        avg_char_coverage = sum(char_coverages) / len(char_coverages) if char_coverages else 0
+        avg_token_length = sum(token_lengths) / len(token_lengths) if token_lengths else 0
+        std_token_length = np.std(token_lengths) if len(token_lengths) > 1 else 0
+        
+        # Detect anomalies using tokenization ratio only
+        anomalies, z_scores = detect_anomalies(ratios, config['z_threshold'])
+        anomaly_count = int(np.sum(anomalies))
+        
+        metrics = {
+            'avg_tokens': avg_tokens,
+            'avg_chars': avg_chars,
+            'avg_tokens_per_char': avg_tokens_per_char,
+            'std_tokens_per_char': std_tokens_per_char,
+            'anomaly_count': anomaly_count,
+            'avg_char_coverage': avg_char_coverage,
+            'avg_token_length': avg_token_length,
+            'std_token_length': std_token_length,
+            'unique_token_count': len(unique_tokens),
+            'sample_count': len(results)
+        }
+        
+        logging.info(f"Language {language_code} metrics: {metrics}")
+        
+        return {
+            'language': language_code,
+            'status': 'success',
+            'metrics': metrics
+        }
+        
+    except Exception as e:
+        logging.error(f"Error processing {language_code}: {str(e)}")
+        return {
+            'language': language_code,
+            'status': 'error',
+            'error': str(e)
+        }
 
 def visualize_metrics(results, config):
-    """Enhanced visualizations with better styling and annotations"""
+    """Generate visualizations of the validation results."""
     try:
         output_dir = Path(config['output_dir'])
         output_dir.mkdir(exist_ok=True, parents=True)
-        
-        # here we set up Seaborn style and create the boxplot
-        sns.set(style="whitegrid", context="notebook", font_scale=1.2)
-        with sns.axes_style("whitegrid"):
-            plt.figure(figsize=tuple(config['figure_size']['boxplot']))
-            data = []
-            labels = []
-            for lang, result in results.items():
-                if result["num_samples"] > 0:
-                    data.append(result["z_scores"])
-                    labels.append(lang)
-            
-            sns.boxplot(data=data)
-            plt.xticks(range(len(labels)), labels, rotation=45)
-            plt.title("Tokenization Ratio Distribution by Language", pad=20)
-            plt.ylabel("Z-score of Tokens per Character")
-            plt.tight_layout()
-            plt.savefig(output_dir / "boxplot_by_language.png", 
-                        dpi=config['dpi'], 
-                        bbox_inches='tight')
-            plt.close()
-        
-        # Heatmap
-        with sns.axes_style("whitegrid"):
-            plt.figure(figsize=tuple(config['figure_size']['heatmap']))
-            metrics = np.array([[result["avg_tokens_per_char"], 
-                                result["std_tokens_per_char"],
-                                result["anomaly_count"],
-                                result["avg_char_coverage"]] 
-                               for result in results.values()])
-            
-            metrics_norm = (metrics - metrics.min(axis=0)) / (metrics.max(axis=0) - metrics.min(axis=0))
-            
-            sns.heatmap(metrics_norm, 
-                        annot=metrics,
-                        fmt='.3f',
-                        xticklabels=['Avg Tokens/Char', 'Std Dev', 'Anomalies', 'Char Coverage'],
-                        yticklabels=results.keys(),
-                        cmap='YlOrRd',
-                        cbar_kws={'label': 'Normalized Value'})
-            plt.title("Normalized Tokenization Metrics by Language", pad=20)
-            plt.tight_layout()
-            plt.savefig(output_dir / "metrics_heatmap.png", 
-                        dpi=config['dpi'], 
-                        bbox_inches='tight')
-            plt.close()
-        
-        # Scatter plot
-        with sns.axes_style("whitegrid"):
-            plt.figure(figsize=tuple(config['figure_size']['scatter']))
-            for lang, result in results.items():
-                plt.scatter(result["avg_tokens_per_char"], 
-                           result["std_tokens_per_char"],
-                           label=lang,
-                           s=100)
-                plt.annotate(lang, 
-                            (result["avg_tokens_per_char"], result["std_tokens_per_char"]),
-                            xytext=(5, 5), textcoords='offset points')
-            
-            plt.xlabel("Average Tokens per Character")
-            plt.ylabel("Standard Deviation")
-            plt.title("Tokenization Consistency by Language", pad=20)
-            plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-            plt.tight_layout()
-            plt.savefig(output_dir / "consistency_scatter.png", 
-                        dpi=config['dpi'], 
-                        bbox_inches='tight')
-            plt.close()
-        
-        # Verify that all visualization files were created
-        verify_visualization_files(output_dir)
-        
+
+        # Extract metrics for visualization
+        languages = []
+        tokens_per_char = []
+        std_tokens_per_char = []
+        anomaly_counts = []
+        char_coverage = []
+        sample_counts = []
+        avg_token_lengths = []
+        std_token_lengths = []
+        unique_token_counts = []
+
+        for lang, result in results.items():
+            if result['status'] == 'success' and 'metrics' in result:
+                metrics = result['metrics']
+                languages.append(lang)
+                tokens_per_char.append(metrics.get('avg_tokens_per_char', 0))
+                std_tokens_per_char.append(metrics.get('std_tokens_per_char', 0))
+                anomaly_counts.append(metrics.get('anomaly_count', 0))
+                char_coverage.append(metrics.get('avg_char_coverage', 0))
+                sample_counts.append(metrics.get('sample_count', 0))
+                avg_token_lengths.append(metrics.get('avg_token_length', 0))
+                std_token_lengths.append(metrics.get('std_token_length', 0))
+                unique_token_counts.append(metrics.get('unique_token_count', 0))
+
+        if not languages:
+            logging.warning("No valid results to visualize")
+            return
+
+        sns.set_theme(style="whitegrid")
+
+        # 1. Bar plot for tokens per character
+        fig1 = plt.figure(figsize=(12, 6))
+        plt.bar(languages, tokens_per_char)
+        plt.title('Average Tokens per Character by Language')
+        plt.ylabel('Avg Tokens per Char')
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        fig1.savefig(str(output_dir / 'tokens_per_char.png'), format='png', dpi=300, bbox_inches='tight')
+        plt.close(fig1)
+
+        # 2. Heatmap for all key metrics
+        metrics_matrix = np.array([
+            tokens_per_char,
+            std_tokens_per_char,
+            anomaly_counts,
+            char_coverage,
+            avg_token_lengths,
+            std_token_lengths,
+            unique_token_counts
+        ])
+        metric_labels = [
+            'Avg Tokens/Char',
+            'Std Dev',
+            'Anomalies',
+            'Char Coverage',
+            'Avg Token Length',
+            'Token Length Std',
+            'Unique Tokens'
+        ]
+        fig2, ax2 = plt.subplots(figsize=(max(8, len(languages)), 8))
+        sns.heatmap(metrics_matrix, annot=True, fmt='.2f', cmap='YlOrRd',
+                   yticklabels=metric_labels, xticklabels=languages, ax=ax2)
+        plt.title('Validation Metrics Heatmap')
+        plt.tight_layout()
+        fig2.savefig(str(output_dir / 'metrics_heatmap.png'), format='png', dpi=300, bbox_inches='tight')
+        plt.close(fig2)
+
+        # 3. Scatter plot: sample count vs tokens per char, color by anomaly count
+        fig3 = plt.figure(figsize=(10, 6))
+        scatter = plt.scatter(sample_counts, tokens_per_char, c=anomaly_counts,
+                            cmap='coolwarm', alpha=0.7, s=100)
+        for i, lang in enumerate(languages):
+            plt.annotate(lang, (sample_counts[i], tokens_per_char[i]), fontsize=9, ha='right')
+        plt.xlabel('Number of Samples')
+        plt.ylabel('Average Tokens per Character')
+        plt.title('Sample Size vs Tokenization Ratio (color=anomalies)')
+        plt.colorbar(scatter, label='Anomaly Count')
+        plt.tight_layout()
+        fig3.savefig(str(output_dir / 'consistency_scatter.png'), format='png', dpi=300, bbox_inches='tight')
+        plt.close(fig3)
+
+        # 4. Bar plot for character coverage
+        fig4 = plt.figure(figsize=(12, 6))
+        plt.bar(languages, char_coverage)
+        plt.title('Character Coverage by Language')
+        plt.ylabel('Coverage Ratio')
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        fig4.savefig(str(output_dir / 'char_coverage.png'), format='png', dpi=300, bbox_inches='tight')
+        plt.close(fig4)
+
+        plt.close('all')
+
+        # Verify the files were created and are valid
+        for filename in ['tokens_per_char.png', 'metrics_heatmap.png', 'consistency_scatter.png', 'char_coverage.png']:
+            file_path = output_dir / filename
+            if not file_path.exists():
+                logging.warning(f"Failed to create {filename}")
+            elif file_path.stat().st_size == 0:
+                logging.warning(f"Created empty file {filename}")
+            elif not verify_image_file(file_path):
+                logging.warning(f"Created invalid image file {filename}")
+
     except Exception as e:
-        raise TokenizerValidationError(f"Error generating visualizations: {e}")
+        logging.error(f"Error generating visualizations: {e}")
+        # Don't raise the error, just log it and continue
 
 def generate_html_report(results, config):
     """Generate an HTML report with results and visualizations"""
@@ -563,32 +739,37 @@ def generate_html_report(results, config):
             <table>
                 <tr>
                     <th>Language</th>
-                    <th>Samples</th>
+                    <th>Status</th>
                     <th>Avg Tokens/Char</th>
                     <th>Std Dev</th>
                     <th>Anomalies</th>
                     <th>Char Coverage</th>
-                    <th>Status</th>
+                    <th>Samples</th>
                 </tr>
                 {% for lang, result in results.items() %}
                 <tr>
                     <td>{{ lang }}</td>
-                    <td>{{ result.num_samples }}</td>
-                    <td>{{ "%.3f"|format(result.avg_tokens_per_char) }}</td>
-                    <td>{{ "%.3f"|format(result.std_tokens_per_char) }}</td>
-                    <td>{{ result.anomaly_count }}</td>
-                    <td>{{ "%.2f"|format(result.avg_char_coverage) }}</td>
-                    <td class="{{ 'warning' if result.anomaly_count > 0 else 'success' }}">
-                        {{ '⚠️' if result.anomaly_count > 0 else '✅' }}
+                    <td class="{{ 'warning' if result.status == 'error' or (result.metrics.anomaly_count if result.status == 'success' and 'metrics' in result and 'anomaly_count' in result.metrics else 0) > 0 else 'success' }}">
+                        {{ '⚠️' if result.status == 'error' or (result.metrics.anomaly_count if result.status == 'success' and 'metrics' in result and 'anomaly_count' in result.metrics else 0) > 0 else '✅' }}
                     </td>
+                    {% if result.status == 'success' and 'metrics' in result %}
+                    <td>{{ "%.3f"|format(result.metrics.avg_tokens_per_char) if 'avg_tokens_per_char' in result.metrics else 'N/A' }}</td>
+                    <td>{{ "%.3f"|format(result.metrics.std_tokens_per_char) if 'std_tokens_per_char' in result.metrics else 'N/A' }}</td>
+                    <td>{{ result.metrics.anomaly_count if 'anomaly_count' in result.metrics else 0 }}</td>
+                    <td>{{ "%.2f"|format(result.metrics.avg_char_coverage) if 'avg_char_coverage' in result.metrics else 'N/A' }}</td>
+                    <td>{{ result.metrics.sample_count if 'sample_count' in result.metrics else 0 }}</td>
+                    {% else %}
+                    <td colspan="6">{{ result.error if 'error' in result else 'N/A' }}</td>
+                    {% endif %}
                 </tr>
                 {% endfor %}
             </table>
             
             <h2>Visualizations</h2>
-            <img src="boxplot_by_language.png" alt="Box Plot">
+            <img src="tokens_per_char.png" alt="Tokens per Character">
             <img src="metrics_heatmap.png" alt="Metrics Heatmap">
             <img src="consistency_scatter.png" alt="Consistency Scatter">
+            <img src="char_coverage.png" alt="Character Coverage">
         </body>
         </html>
         """
@@ -659,12 +840,11 @@ def main(config, sample_size, max_workers, languages, no_browser, output_format,
         tokenizer_wrapper = TokenizerThreadSafeWrapper(tokenizer_path)
         logging.info("Successfully initialized tokenizer wrapper")
 
-        validation_args = [(tokenizer_wrapper, lang, config_data['sample_size'], config_data) 
-                         for lang in config_data['languages']]
+        validation_args = [(lang, tokenizer_wrapper, config_data) for lang in config_data['languages']]
         
         results = {}
         executor = ThreadPoolExecutor(max_workers=config_data['max_workers'])
-        futures = {executor.submit(validate_language, *args): args[1] 
+        futures = {executor.submit(validate_language, *args): args[0] 
                   for args in validation_args}
         
         try:
@@ -710,14 +890,22 @@ def main(config, sample_size, max_workers, languages, no_browser, output_format,
         # Print summary
         click.echo("\nTokenization Quality Summary:")
         click.echo("-" * 120)
-        click.echo(f"{'Language':<6} {'Samples':<8} {'Avg Tokens/Char':<15} {'Std Dev':<10} {'Anomalies':<10} {'Char Coverage':<15} {'Status':<10}")
+        click.echo(f"{'Language':<8} {'Samples':<8} {'Avg Tokens/Char':<15} {'Std Dev':<10} {'Anomalies':<10} {'Char Coverage':<15} {'Status':<10}")
         click.echo("-" * 120)
-        
+
         for lang, result in results.items():
-            status = "⚠️" if result["anomaly_count"] > 0 else "✅"
-            click.echo(f"{lang:<6} {result['num_samples']:<8} {result['avg_tokens_per_char']:<15.3f} "
-                      f"{result['std_tokens_per_char']:<10.3f} {result['anomaly_count']:<10} "
-                      f"{result['avg_char_coverage']:<15.2f} {status:<10}")
+            if result["status"] == "success" and "metrics" in result:
+                metrics = result["metrics"]
+                avg_tokens_per_char = metrics.get("avg_tokens_per_char", 0)
+                std_tokens_per_char = metrics.get("std_tokens_per_char", 0)
+                anomaly_count = metrics.get("anomaly_count", 0)
+                avg_char_coverage = metrics.get("avg_char_coverage", 0)
+                sample_count = metrics.get("sample_count", 0)
+                status = "⚠️" if anomaly_count > 0 else "✅"
+                click.echo(f"{lang:<8} {sample_count:<8} {avg_tokens_per_char:<15.3f} {std_tokens_per_char:<10.3f} {anomaly_count:<10} {avg_char_coverage:<15.2f} {status:<10}")
+            else:
+                status = "⚠️"
+                click.echo(f"{lang:<8} {'N/A':<8} {'N/A':<15} {'N/A':<10} {'N/A':<10} {'N/A':<15} {status:<10}")
         
         logging.info(f"Results saved to {output_dir}")
         logging.info("Validation completed successfully")

@@ -105,3 +105,10 @@ go.work
 ### Go Patch ###
 /vendor/
 /Godeps/
+test_validation_results/char_coverage.png
+test_validation_results/consistency_scatter.png
+test_validation_results/metrics_heatmap.png
+test_validation_results/report.html
+test_validation_results/tokenizer_validation_results.json
+test_validation_results/tokenizer_validation_results.md
+test_validation_results/tokens_per_char.png
