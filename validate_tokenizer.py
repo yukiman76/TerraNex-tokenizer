@@ -296,7 +296,8 @@ def load_test_samples(language_code: str, config: Dict[str, Any]) -> List[str]:
             primary_dataset_name,
             dataset_lang_codes[primary_dataset_name],
             split="train",
-            trust_remote_code=True
+            trust_remote_code=True,
+            data_dir="./datasets"
         )
         # Extract just the text from each sample and ensure it's a string
         test_samples = []
@@ -325,7 +326,8 @@ def load_test_samples(language_code: str, config: Dict[str, Any]) -> List[str]:
                 dataset_name,
                 dataset_lang_codes[dataset_name],
                 split="train",
-                trust_remote_code=True
+                trust_remote_code=True,
+                data_dir="./datasets"
             )
             # Extract just the text from each sample and ensure it's a string
             test_samples = []
