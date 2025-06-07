@@ -749,8 +749,8 @@ def generate_html_report(results, config):
                 {% for lang, result in results.items() %}
                 <tr>
                     <td>{{ lang }}</td>
-                    <td class="{{ 'warning' if result.status == 'error' or (result.metrics.anomaly_count if result.status == 'success' and 'metrics' in result and 'anomaly_count' in result.metrics else 0) > 0 else 'success' }}">
-                        {{ '⚠️' if result.status == 'error' or (result.metrics.anomaly_count if result.status == 'success' and 'metrics' in result and 'anomaly_count' in result.metrics else 0) > 0 else '✅' }}
+                    <td class="{{ 'warning' if result.status == 'error' or (result.metrics.anomaly_count if result.status == 'success' and 'metrics' in result and 'anomaly_count' in result.metrics else 0) / (result.metrics.sample_count if result.status == 'success' and 'metrics' in result and 'sample_count' in result.metrics else 1) > 0.1 else 'success' }}">
+                        {{ '⚠️' if result.status == 'error' or (result.metrics.anomaly_count if result.status == 'success' and 'metrics' in result and 'anomaly_count' in result.metrics else 0) / (result.metrics.sample_count if result.status == 'success' and 'metrics' in result and 'sample_count' in result.metrics else 1) > 0.1 else '✅' }}
                     </td>
                     {% if result.status == 'success' and 'metrics' in result %}
                     <td>{{ "%.3f"|format(result.metrics.avg_tokens_per_char) if 'avg_tokens_per_char' in result.metrics else 'N/A' }}</td>
