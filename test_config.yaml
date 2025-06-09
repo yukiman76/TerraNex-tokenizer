@@ -1,4 +1,4 @@
-tokenizer_path: "Qwen/Qwen2.5-3B"  # Using Qwen model which has good multilingual support
+tokenizer_path: "AI-Sweden-Models/gpt-sw3-40b"  # Using Qwen model which has good multilingual support
 output_dir: "test_validation_results"
 log_dir: "test_logs"
 sample_size: 50  # Reduced sample size for testing

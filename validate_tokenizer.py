@@ -82,25 +82,37 @@ class TokenizerThreadSafeWrapper:
         return self._tokenizer
     
     def analyze_text(self, text: str) -> Optional[Dict[str, Any]]:
-        """Analyze text using the tokenizer."""
+        """Analyze text using the tokenizer, respecting model max length."""
         try:
             tokenizer = self.get_tokenizer()
-            tokens = tokenizer.tokenize(text)
-            ids = tokenizer.encode(text)
-            
+            max_length = getattr(tokenizer, 'model_max_length', None)
+            if max_length and max_length < 1e10:
+                tokens = tokenizer.tokenize(text)
+                if len(tokens) > max_length:
+                    logging.info(f"Input text tokenized to {len(tokens)} tokens, exceeding model's max_length ({max_length}). Truncating to max_length.")
+                    # Truncate tokens and reconstruct text (approximate)
+                    ids = tokenizer.encode(text, max_length=max_length, truncation=True)
+                    tokens = tokenizer.convert_ids_to_tokens(ids)
+                    text = tokenizer.decode(ids, skip_special_tokens=True)
+                else:
+                    ids = tokenizer.encode(text)
+            else:
+                tokens = tokenizer.tokenize(text)
+                ids = tokenizer.encode(text)
+
             # Calculate character coverage
             unique_chars = set(text)
             vocab_chars = set(''.join(tokenizer.get_vocab().keys()))
             char_coverage = len(unique_chars.intersection(vocab_chars)) / len(unique_chars) if unique_chars else 0
-            
+
             # Calculate token statistics
             token_lengths = [len(token) for token in tokens]
             avg_token_length = sum(token_lengths) / len(token_lengths) if token_lengths else 0
             std_token_length = np.std(token_lengths) if len(token_lengths) > 1 else 0
-            
+
             # Calculate tokenization ratio
             tokens_per_char = len(tokens) / len(text) if len(text) > 0 else 0
-            
+
             metrics = {
                 'tokens': len(tokens),
                 'chars': len(text),
@@ -111,10 +123,10 @@ class TokenizerThreadSafeWrapper:
                 'unique_tokens': len(set(tokens)),
                 'token_lengths': token_lengths
             }
-            
+
             logging.debug(f"Text analysis metrics: {metrics}")
             return metrics
-            
+
         except Exception as e:
             logging.error(f"Error analyzing text: {e}")
             return None
@@ -938,4 +950,4 @@ def main(config, sample_size, max_workers, languages, no_browser, output_format,
                 shutil.rmtree(temp_dir)
 
 if __name__ == "__main__":
-    main() 
+    main()
