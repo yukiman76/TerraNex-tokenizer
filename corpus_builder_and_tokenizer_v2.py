@@ -58,8 +58,8 @@ def yield_lines_from_file(file_path):
     except Exception as e:
         logger.warning(f"Failed to read from file {file_path}: {str(e)}")
 
-def extract_hf_dataset(dataset_name, config=None, split="train", field="auto", max_pct=1.0, streaming=True, min_line_length=32):
-    logger.info(f"Loading dataset {dataset_name} with config={config}, split={split}, field={field}, max_pct={max_pct}")
+def extract_hf_dataset(dataset_name, config=None, split="train", field="auto", max_pct=1.0, streaming=True, min_line_length=32, max_samples=None):
+    logger.info(f"Loading dataset {dataset_name} with config={config}, split={split}, field={field}, max_pct={max_pct}, max_samples={max_samples}")
     try:
         dataset = load_dataset(dataset_name, config, split=split, streaming=streaming)
         logger.info(f"Dataset loaded successfully. Streaming mode: {streaming}")
@@ -105,6 +105,11 @@ def extract_hf_dataset(dataset_name, config=None, split="train", field="auto", m
                 if sampled_lines % 1000 == 0:
                     logger.info(f"Sampled {sampled_lines:,} valid lines from {dataset_name}")
                 yield text
+                
+                # Stop if we've reached max_samples
+                if max_samples is not None and sampled_lines >= max_samples:
+                    logger.info(f"Reached max_samples ({max_samples}) for {dataset_name}")
+                    break
         
         logger.info(f"Finished processing {dataset_name}. Total lines: {total_lines:,}, Sampled lines: {sampled_lines:,}")
     except Exception as e:
@@ -142,7 +147,7 @@ def parse_hf_source(source):
             pct = 1.0
     return dataset, config, split, field, pct
 
-def train_tokenizer_streaming(sources, vocab_size, output_dir, embedding_dim, max_workers=4):
+def train_tokenizer_streaming(sources, vocab_size, output_dir, embedding_dim, max_workers=4, max_samples=None):
     try:
         tokenizer = ByteLevelBPETokenizer()
         
@@ -150,7 +155,7 @@ def train_tokenizer_streaming(sources, vocab_size, output_dir, embedding_dim, ma
             for source in sources:
                 if source.startswith("hf::"):
                     dataset, config, split, field, pct = parse_hf_source(source)
-                    for text in extract_hf_dataset(dataset, config, split, field, pct, streaming=True):
+                    for text in extract_hf_dataset(dataset, config, split, field, pct, streaming=True, max_samples=max_samples):
                         yield text
                 elif source.startswith(("http://", "https://")):
                     temp_file = fetch_file_from_url(source)
@@ -197,9 +202,10 @@ def validate_tokenizer(tokenizer_dir):
         sys.exit(1)
 
 def initialize_embedding_matrix(tokenizer, embedding_dim):
-    logger.info(f"Initializing embedding matrix for vocab_size={tokenizer.vocab_size}, embedding_dim={embedding_dim}")
+    vocab_size = len(tokenizer.get_vocab())
+    logger.info(f"Initializing embedding matrix for vocab_size={vocab_size}, embedding_dim={embedding_dim}")
     try:
-        weights = torch.empty((tokenizer.vocab_size, embedding_dim))
+        weights = torch.empty((vocab_size, embedding_dim))
         torch.nn.init.normal_(weights, mean=0.0, std=0.02)
         logger.info(f"Embedding matrix shape: {weights.shape}")
         return weights
@@ -216,7 +222,8 @@ def initialize_embedding_matrix(tokenizer, embedding_dim):
 @click.option('--embedding-dim', type=int, help='Embedding dimension for initialization')
 @click.option('--max_workers', type=int, help='Maximum parallel dataset loaders')
 @click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set the logging level')
-def main(config, source, tokenizer_dir, vocab_size, min_line_length, embedding_dim, max_workers, log_level):
+@click.option('--test-mode', is_flag=True, help='Run in test mode with 100 samples per dataset')
+def main(config, source, tokenizer_dir, vocab_size, min_line_length, embedding_dim, max_workers, log_level, test_mode):
     # Load config if provided
     if config:
         config_data = load_config(config)
@@ -229,6 +236,9 @@ def main(config, source, tokenizer_dir, vocab_size, min_line_length, embedding_d
         max_workers = max_workers or config_data.get('processing', {}).get('max_workers', 4)
         log_level = log_level or config_data.get('logging', {}).get('level', 'INFO')
     
+    # Set max_samples if in test mode
+    max_samples = 100 if test_mode else None
+    
     # Configure logging
     logging.basicConfig(
         level=getattr(logging, log_level),
@@ -238,7 +248,9 @@ def main(config, source, tokenizer_dir, vocab_size, min_line_length, embedding_d
     
     try:
         logger.info("Step 1: Train tokenizer with streaming")
-        tokenizer = train_tokenizer_streaming(source, vocab_size, tokenizer_dir, embedding_dim, max_workers)
+        if test_mode:
+            logger.info("Running in test mode with 100 samples per dataset")
+        tokenizer = train_tokenizer_streaming(source, vocab_size, tokenizer_dir, embedding_dim, max_workers, max_samples)
         
         logger.info("Step 2: Validate tokenizer")
         tokenizer = validate_tokenizer(tokenizer_dir)
