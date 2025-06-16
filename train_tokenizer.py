@@ -2,6 +2,7 @@ import os
 
 os.environ["HF_DATASETS_CACHE"] = "./datasets"
 import sys
+import json
 import click
 import torch
 import logging
@@ -34,12 +35,12 @@ SPECIAL_TOKENS = {
 }
 
 data_sets = {
-    # "bigcode/the-stack-march-sample-special-tokens-stripped": {
-    #     "field": "content",
-    #     "extra": [],
-    # },  # 1.1G
-    # "codeparrot/github-code": {"field": "code", "extra": []},  # 1.1 TB
-    # "bigcode/the-stack-github-issues": {"field": "content", "extra": []},  # 66.6 G
+    "bigcode/the-stack-march-sample-special-tokens-stripped": {
+        "field": "content",
+        "extra": [],
+    },  # 1.1G
+    "codeparrot/github-code": {"field": "code", "extra": []},  # 1.1 TB
+    "bigcode/the-stack-github-issues": {"field": "content", "extra": []},  # 66.6 G
     "iohadrubin/wikitext-103-raw-v1": {"field": "text", "extra": []},  # 310M
     "oscar-corpus/mOSCAR": {
         "field": "text",
@@ -204,20 +205,29 @@ def validate_tokenizer(tokenizer_dir):
         sys.exit(1)
 
 
-def save_tokenizer_config(tokenizer_dir):
-    from transformers import PreTrainedTokenizerFast
-
-    fast_tokenizer = PreTrainedTokenizerFast(
-        tokenizer_file=f"{tokenizer_dir}/tokenizer.json",
-        vocab_file=f"{tokenizer_dir}/vocab.json",
-        merges_file=f"{tokenizer_dir}/merges.txt",
-        unk_token=SPECIAL_TOKENS["unk_token"],
-        pad_token=SPECIAL_TOKENS["pad_token"],
-        bos_token=SPECIAL_TOKENS["bos_token"],
-        eos_token=SPECIAL_TOKENS["eos_token"],
-    )
-
-    fast_tokenizer.save_pretrained(tokenizer_dir)
+def save_tokenizer_config(tokenizer_dir, vocab_size, embedding_dim):
+    """Save tokenizer configuration to config.json"""
+    config = {
+        "model_type": "byte_level_bpe",
+        "vocab_size": vocab_size,
+        "embedding_dim": embedding_dim,
+        "special_tokens": SPECIAL_TOKENS,
+        "max_position_embeddings": 2048,  # Common default value
+        "pad_token": SPECIAL_TOKENS["pad_token"],
+        "bos_token": SPECIAL_TOKENS["bos_token"],
+        "eos_token": SPECIAL_TOKENS["eos_token"],
+        "unk_token": SPECIAL_TOKENS["unk_token"],
+        "mask_token": SPECIAL_TOKENS["mask_token"]
+    }
+    
+    config_path = os.path.join(tokenizer_dir, "config.json")
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2)
+        logger.info(f"Saved tokenizer config to {config_path}")
+    except Exception as e:
+        logger.error(f"Failed to save tokenizer config: {e}", exc_info=True)
+        raise
 
 
 @click.command()
@@ -277,7 +287,7 @@ def main(
             weights.cpu().numpy(),
         )
         logger.info("Step 5: create tokenizer wrapper")
-        save_tokenizer_config(tokenizer_out_dir)
+        save_tokenizer_config(tokenizer_out_dir, vocab_size, embedding_dim)
         logger.info("All steps completed successfully.")
     except KeyboardInterrupt:
         logger.warning("Process interrupted by user. Exiting gracefully.")
