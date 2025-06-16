@@ -60,7 +60,7 @@ data_sets = {
     "statmt/cc100": {
         "field": "text",
         "extra": ["sv", "en", "es", "de", "cy", "da", "fr", "it", "la", "nl", "no"],
-    }, #713G
+    },  # 713G
 }
 
 
@@ -131,21 +131,36 @@ def initialize_embedding_matrix(tokenizer, embedding_dim=1024):
 def batch_iterator(my_datasets, batch_size=10_000):
     i_ds = 1
     try:
-        for d in tqdm(my_datasets, desc="Processing"):
-            for i in tqdm(d.dataset, desc=f"Processing dataset {d.dataset_name} {i_ds} "):
-                k = d.dataset[d.affected_field]
+        for d in tqdm(my_datasets, desc="Processing Datasets"):
+            for record in tqdm(
+                d.dataset, desc=f"Processing dataset {d.dataset_name} ({i_ds})"
+            ):
+                try:
+                    k = record.get(d.affected_field, "")
+                except AttributeError:
+                    continue  # skip malformed record
+
+                s = ""
                 if isinstance(k, list):
-                    s = "".join(k)
-                else:
+                    if len(k) == 0:
+                        continue
+                    if isinstance(k[0], list):  # e.g., list of lists
+                        for sublist in k:
+                            s = "".join(sublist) if isinstance(sublist[0], str) else ""
+                    elif isinstance(k[0], str):  # list of strings
+                        s = "".join(k)
+                elif isinstance(k, str):  # single string
                     s = k
 
                 for p in range(0, len(s), batch_size):
-                    # print(s[p: p+batch_size])
                     yield s[p : p + batch_size]
             i_ds += 1
-    except:
+    except Exception as e:
+        print(f"Error: {e}")
         import IPython
+
         IPython.embed()
+
 
 def train_tokenizer(vocab_size, output_dir, max_workers):
     try:
