@@ -158,7 +158,6 @@ def batch_iterator(my_datasets, batch_size=10_000):
     except Exception as e:
         print(f"Error: {e}")
         import IPython
-
         IPython.embed()
 
 
