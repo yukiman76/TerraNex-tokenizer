@@ -22,6 +22,7 @@ class DSLoader:
     dataset: Dataset = None
     affected_field: str = None
     dataset_name: str = None
+    # extras: list = None
 
 
 SPECIAL_TOKENS = {
@@ -33,34 +34,83 @@ SPECIAL_TOKENS = {
 }
 
 data_sets = {
-    "bigcode/the-stack-march-sample-special-tokens-stripped": "content",  # 1.1G
-    "codeparrot/github-code": "code",  # 1.1 TB
-    "bigcode/the-stack-github-issues": "content",  # 66.6 G
-    "iohadrubin/wikitext-103-raw-v1": "text",  # 310M
+    "bigcode/the-stack-march-sample-special-tokens-stripped": {
+        "field": "content",
+        "extra": [],
+    },  # 1.1G
+    "codeparrot/github-code": {"field": "code", "extra": []},  # 1.1 TB
+    "bigcode/the-stack-github-issues": {"field": "content", "extra": []},  # 66.6 G
+    "iohadrubin/wikitext-103-raw-v1": {"field": "text", "extra": []},  # 310M
+    "oscar-corpus/mOSCAR": {
+        "field": "text",
+        "extra": [
+            "swe_Latn",
+            "eng_Latn",
+            "spa_Latn",
+            "deu_Latn",
+            "cym_Latn",
+            "dan_Latn",
+            "fra_Latn",
+            "ita_Latn",
+            "nld_Latn",
+            "nno_Latn",
+            "nob_Latn",
+        ],
+    },  # 689G
+    "statmt/cc100": {
+        "field": "text",
+        "extra": ["sv", "en", "es", "de", "cy", "da", "fr", "it", "la", "nl", "no"],
+    }, #713G
 }
 
 
 def load_all_datasets(max_workers=4, streaming=True, sample=None):
     for dataset_name in data_sets:
-        d = DSLoader()
-        d.dataset = load_dataset(
-            dataset_name,
-            split="train",
-            streaming=streaming,
-            #    num_proc=max_workers,
-            cache_dir="./datasets",
-        )
-        # lets set some helpers
-        d.affected_field = data_sets[dataset_name]
-        d.dataset_name = dataset_name
-        if sample:
-            shuffled_dataset = d.dataset.shuffle(seed=42)
-            shuffled_dataset.affected_field = data_sets[dataset_name]
-            shuffled_dataset.dataset_name = dataset_name
-            sampled_list = list(itertools.islice(shuffled_dataset, sample))
-            d.dataset = Dataset.from_list(sampled_list)
+        if len(data_sets[dataset_name]["extra"]) > 0:
+            for lang in data_sets[dataset_name]["extra"]:
+                logger.info(f"Processing {dataset_name}.{lang}")
+                d = DSLoader()
+                d.dataset = load_dataset(
+                    dataset_name,
+                    name=lang,
+                    split="train",
+                    streaming=streaming,
+                    #    num_proc=max_workers,
+                    cache_dir="./datasets",
+                )
+                # lets set some helpers
+                d.affected_field = data_sets[dataset_name]["field"]
+                d.dataset_name = f"{dataset_name}.{lang}"
 
-        yield d
+                if sample:
+                    shuffled_dataset = d.dataset.shuffle(seed=42)
+                    shuffled_dataset.affected_field = data_sets[dataset_name]
+                    shuffled_dataset.dataset_name = dataset_name
+                    sampled_list = list(itertools.islice(shuffled_dataset, sample))
+                    d.dataset = Dataset.from_list(sampled_list)
+
+                yield d
+        else:
+            d = DSLoader()
+            d.dataset = load_dataset(
+                dataset_name,
+                split="train",
+                streaming=streaming,
+                #    num_proc=max_workers,
+                cache_dir="./datasets",
+            )
+            # lets set some helpers
+            d.affected_field = data_sets[dataset_name]["field"]
+            d.dataset_name = dataset_name
+
+            if sample:
+                shuffled_dataset = d.dataset.shuffle(seed=42)
+                shuffled_dataset.affected_field = data_sets[dataset_name]
+                shuffled_dataset.dataset_name = dataset_name
+                sampled_list = list(itertools.islice(shuffled_dataset, sample))
+                d.dataset = Dataset.from_list(sampled_list)
+
+            yield d
 
 
 def initialize_embedding_matrix(tokenizer, embedding_dim=1024):
