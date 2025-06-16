@@ -10,4 +10,8 @@ matplotlib
 seaborn
 scipy
 psutil
+# for validation
 sentencepiece
+tiktoken
+protobuf
+blobfile

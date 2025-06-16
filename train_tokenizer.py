@@ -83,10 +83,10 @@ def initialize_embedding_matrix(tokenizer, embedding_dim=1024):
 
 
 def batch_iterator(my_datasets, batch_size=10_000):
-    i_ds = 0
+    i_ds = 1
     for dataset in tqdm(my_datasets, desc="Processing"):
         field = get_field(dataset)
-        for i in tqdm(dataset, desc=f"Processing dataset {i_ds}"):
+        for i in tqdm(dataset, desc=f"Processing dataset {i_ds} "):
             k = dataset[field]
             if isinstance(k, list):
                 s = "".join(k)
@@ -141,6 +141,21 @@ def validate_tokenizer(tokenizer_dir):
         sys.exit(1)
 
 
+def save_tokenizer_config(tokenizer_dir):
+    from transformers import PreTrainedTokenizerFast
+
+    fast_tokenizer = PreTrainedTokenizerFast(
+        tokenizer_file=f"{tokenizer_dir}/tokenizer.json",
+        vocab_file=f"{tokenizer_dir}/vocab.json",
+        merges_file=f"{tokenizer_dir}/merges.txt",
+        unk_token=SPECIAL_TOKENS["unk_token"],
+        pad_token=SPECIAL_TOKENS["pad_token"],
+        bos_token=SPECIAL_TOKENS["bos_token"],
+        eos_token=SPECIAL_TOKENS["eos_token"],
+    )
+
+    fast_tokenizer.save_pretrained(tokenizer_dir)
+
 
 @click.command()
 @click.option(
@@ -188,18 +203,19 @@ def main(
     )
 
     try:
-        logger.info("Step 2: Train tokenizer")
+        logger.info("Step 1: Train tokenizer")
         tokenizer = train_tokenizer(vocab_size, tokenizer_out_dir, max_workers)
         logger.info("Step 3: Validate tokenizer")
-
-        logger.info("Step 6: Embedding matrix initialization")
+        validate_tokenizer(tokenizer_out_dir)
+        logger.info("Step 4: Embedding matrix initialization")
         weights = initialize_embedding_matrix(tokenizer, embedding_dim)
         np.save(
             os.path.join(tokenizer_out_dir, "embedding_matrix.npy"),
             weights.cpu().numpy(),
         )
+        logger.info("Step 5: create tokenizer wrapper")
+        save_tokenizer_config(tokenizer_out_dir)
         logger.info("All steps completed successfully.")
-        validate_tokenizer(tokenizer_out_dir)
     except KeyboardInterrupt:
         logger.warning("Process interrupted by user. Exiting gracefully.")
         sys.exit(0)
