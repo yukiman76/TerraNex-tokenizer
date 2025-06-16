@@ -65,22 +65,8 @@ def extract_hf_dataset(dataset_name, config=None, split="train", field="auto", m
         dataset = load_dataset(dataset_name, config, split=split, streaming=streaming)
         logger.info(f"Dataset loaded successfully. Streaming mode: {streaming}")
         
-        # First try to use the 'text' field
-        if "text" in dataset.features:
-            field = "text"
-            logger.info(f"Using 'text' field for dataset {dataset_name}")
-        else:
-            # Look for any field that might contain text
-            text_fields = [f for f in dataset.features.keys() 
-                         if isinstance(dataset.features[f], (str, list)) 
-                         and f not in SPECIAL_TOKENS.keys()]
-            
-            if text_fields:
-                field = text_fields[0]
-                logger.info(f"Using field '{field}' for {dataset_name}")
-            else:
-                logger.warning(f"Could not find any text fields in {dataset_name}")
-                field = None
+        # Just use the content field
+        field = "content"
         
         total_lines = 0
         sampled_lines = 0
@@ -92,15 +78,9 @@ def extract_hf_dataset(dataset_name, config=None, split="train", field="auto", m
             # Skip this entry if we're sampling and random value is above max_pct
             if random.random() > max_pct:
                 continue
-                
-            value = entry.get(field, "")
-            # Handle both string and list values
-            if isinstance(value, list):
-                text = " ".join(str(item) for item in value if item)
-            else:
-                text = str(value)
             
-            text = text.strip().replace("\n", " ")
+            text = str(entry.get(field, "")).strip().replace("\n", " ")
+            
             if len(text) >= min_line_length:
                 sampled_lines += 1
                 if sampled_lines % 1000 == 0:
