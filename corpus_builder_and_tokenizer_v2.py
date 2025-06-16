@@ -7,11 +7,13 @@ import requests
 import torch
 import numpy as np
 from tqdm import tqdm
-from datasets import load_dataset, get_dataset_config_names
+from datasets import load_dataset, get_dataset_config_names, DownloadConfig
 from tokenizers import ByteLevelBPETokenizer
 import random
 import yaml
 import json
+import time
+import huggingface_hub
 
 # Move logging configuration to after click options
 logger = logging.getLogger(__name__)
@@ -68,42 +70,66 @@ def yield_lines_from_file(file_path):
 
 def extract_hf_dataset(dataset_name, config=None, split="train", field="auto", max_pct=1.0, streaming=True, min_line_length=32, max_samples=None):
     logger.info(f"Loading dataset {dataset_name} with config={config}, split={split}, field={field}, max_pct={max_pct}, max_samples={max_samples}")
-    try:
-        dataset = load_dataset(dataset_name, config, split=split, streaming=streaming)
-        logger.info(f"Dataset loaded successfully. Streaming mode: {streaming}")
-        
-        # Use the field mapping or default to 'content'
-        field = DATASET_FIELD_MAPPING.get(dataset_name, "content")
-        logger.info(f"Using field '{field}' for dataset {dataset_name}")
-        
-        total_lines = 0
-        sampled_lines = 0
-        for entry in tqdm(dataset, desc=f"Processing {dataset_name}", total=None):
-            total_lines += 1
-            if total_lines % 10000 == 0:
-                logger.info(f"Processed {total_lines:,} lines from {dataset_name}")
+    
+    max_attempts = 3
+    attempt = 0
+    
+    while attempt < max_attempts:
+        try:
+            dataset = load_dataset(
+                dataset_name, 
+                config, 
+                split=split, 
+                streaming=streaming,
+                download_config=DownloadConfig(resume_download=True)
+            )
+            logger.info(f"Dataset loaded successfully. Streaming mode: {streaming}")
             
-            # Skip this entry if we're sampling and random value is above max_pct
-            if random.random() > max_pct:
-                continue
+            # Use the field mapping or default to 'content'
+            field = DATASET_FIELD_MAPPING.get(dataset_name, "content")
+            logger.info(f"Using field '{field}' for dataset {dataset_name}")
             
-            text = str(entry.get(field, "")).strip().replace("\n", " ")
-            
-            if len(text) >= min_line_length:
-                sampled_lines += 1
-                if sampled_lines % 1000 == 0:
-                    logger.info(f"Sampled {sampled_lines:,} valid lines from {dataset_name}")
-                yield text
+            total_lines = 0
+            sampled_lines = 0
+            for entry in tqdm(dataset, desc=f"Processing {dataset_name}", total=None):
+                total_lines += 1
                 
-                # Stop if we've reached max_samples
-                if max_samples is not None and sampled_lines >= max_samples:
-                    logger.info(f"Reached max_samples ({max_samples}) for {dataset_name}")
-                    break
-        
-        logger.info(f"Finished processing {dataset_name}. Total lines: {total_lines:,}, Sampled lines: {sampled_lines:,}")
-    except Exception as e:
-        logger.error(f"Error loading dataset {dataset_name}: {str(e)}", exc_info=True)
-        raise
+                # Skip this entry if we're sampling and random value is above max_pct
+                if random.random() > max_pct:
+                    continue
+                
+                text = str(entry.get(field, "")).strip().replace("\n", " ")
+                
+                if len(text) >= min_line_length:
+                    sampled_lines += 1
+                    yield text
+                    
+                    # Stop if we've reached max_samples
+                    if max_samples is not None and sampled_lines >= max_samples:
+                        logger.info(f"Reached max_samples ({max_samples}) for {dataset_name}")
+                        break
+            
+            logger.info(f"Finished processing {dataset_name}. Total lines: {total_lines:,}, Sampled lines: {sampled_lines:,}")
+            break  # Success, exit the retry loop
+            
+        except requests.exceptions.ReadTimeout as e:
+            attempt += 1
+            if attempt < max_attempts:
+                wait_time = 5 * attempt  # Progressive backoff: 5s, 10s, 15s
+                logger.warning(f"Connection timed out (attempt {attempt}/{max_attempts}). Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                logger.error("Failed to connect to Hugging Face after multiple attempts. Please check your internet connection.")
+                raise
+        except huggingface_hub.errors.HfHubHTTPError as e:
+            if "403" in str(e):
+                logger.error(f"Access denied to dataset {dataset_name}. Please check if you have the correct permissions.")
+            else:
+                logger.error(f"Error accessing dataset {dataset_name}: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error loading dataset {dataset_name}: {str(e)}")
+            raise
 
 def expand_all_hf_configs(dataset_name):
     try:
@@ -280,8 +306,17 @@ def main(config, source, tokenizer_dir, vocab_size, min_line_length, embedding_d
     except KeyboardInterrupt:
         logger.warning("Process interrupted by user. Exiting gracefully.")
         sys.exit(0)
+    except huggingface_hub.errors.HfHubHTTPError as e:
+        if "403" in str(e):
+            logger.error("Access denied to dataset. Please check if you have the correct permissions.")
+        else:
+            logger.error(f"Error accessing dataset: {str(e)}")
+        sys.exit(1)
+    except requests.exceptions.ReadTimeout:
+        logger.error("Connection timed out. Please check your internet connection and try again.")
+        sys.exit(1)
     except Exception as e:
-        logger.error(f"Critical failure: {str(e)}", exc_info=True)
+        logger.error(f"An unexpected error occurred: {str(e)}")
         sys.exit(1)
 
 if __name__ == "__main__":
