@@ -7,7 +7,10 @@ import click
 import yaml
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from transformers import AutoTokenizer
+from tokenizers import Tokenizer
+from tokenizers.models import BPE
+from tokenizers.pre_tokenizers import ByteLevel
+from tokenizers.decoders import ByteLevel as ByteLevelDecoder
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -73,33 +76,35 @@ class TokenizerThreadSafeWrapper:
         self._tokenizer = None
         self._lock = threading.Lock()
     
-    def get_tokenizer(self) -> AutoTokenizer:
+    def get_tokenizer(self) -> Tokenizer:
         """Get the tokenizer instance, creating it if necessary."""
         if self._tokenizer is None:
             with self._lock:
                 if self._tokenizer is None:
-                    self._tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path)
+                    # Load the vocabulary file
+                    vocab_path = os.path.join(self.tokenizer_path, "vocab.json")
+                    if not os.path.exists(vocab_path):
+                        raise TokenizerValidationError(f"Vocabulary file not found at {vocab_path}")
+                    
+                    # Create a BPE tokenizer with the vocabulary
+                    self._tokenizer = Tokenizer(BPE())
+                    self._tokenizer.pre_tokenizer = ByteLevel()
+                    self._tokenizer.decoder = ByteLevelDecoder()
+                    
+                    # Load the vocabulary
+                    with open(vocab_path, 'r', encoding='utf-8') as f:
+                        vocab = json.load(f)
+                    self._tokenizer.add_tokens(list(vocab.keys()))
+        
         return self._tokenizer
     
     def analyze_text(self, text: str) -> Optional[Dict[str, Any]]:
-        """Analyze text using the tokenizer, respecting model max length."""
+        """Analyze text using the tokenizer."""
         try:
             tokenizer = self.get_tokenizer()
-            max_length = getattr(tokenizer, 'model_max_length', None)
-            if max_length and max_length < 1e10:
-                tokens = tokenizer.tokenize(text)
-                if len(tokens) > max_length:
-                    logging.info(f"Input text tokenized to {len(tokens)} tokens, exceeding model's max_length ({max_length}). Truncating to max_length.")
-                    # Truncate tokens and reconstruct text (approximate)
-                    ids = tokenizer.encode(text, max_length=max_length, truncation=True)
-                    tokens = tokenizer.convert_ids_to_tokens(ids)
-                    text = tokenizer.decode(ids, skip_special_tokens=True)
-                else:
-                    ids = tokenizer.encode(text)
-            else:
-                tokens = tokenizer.tokenize(text)
-                ids = tokenizer.encode(text)
-
+            encoding = tokenizer.encode(text)
+            tokens = encoding.tokens
+            
             # Calculate character coverage
             unique_chars = set(text)
             vocab_chars = set(''.join(tokenizer.get_vocab().keys()))
@@ -146,6 +151,7 @@ class ResourceMonitor:
         self.config = config
         self.process = psutil.Process()
         self._initialize_cpu_measurement()
+        self.warning_threshold = 0.9  # 90% of the limit
     
     def _initialize_cpu_measurement(self):
         """Initialize CPU measurement by getting an initial reading"""
@@ -160,17 +166,28 @@ class ResourceMonitor:
             memory_mb = memory_info.rss / 1024 / 1024
             cpu_percent = self.process.cpu_percent()
             
+            # Get CPU limit from config, default to 100 if not specified
+            cpu_limit = self.config['resource_limits'].get('max_cpu_percent', 100)
+            
             if memory_mb > self.config['resource_limits']['max_memory_mb']:
                 raise ResourceLimitExceededError(
                     f"Memory usage ({memory_mb:.1f}MB) exceeds limit "
                     f"({self.config['resource_limits']['max_memory_mb']}MB)"
                 )
             
-            if cpu_percent > self.config['resource_limits']['max_cpu_percent']:
-                raise ResourceLimitExceededError(
-                    f"CPU usage ({cpu_percent:.1f}%) exceeds limit "
-                    f"({self.config['resource_limits']['max_cpu_percent']}%)"
+            # Only warn if CPU usage is above warning threshold
+            if cpu_percent > cpu_limit * self.warning_threshold:
+                logging.warning(
+                    f"High CPU usage detected ({cpu_percent:.1f}% of {cpu_limit}% limit). "
+                    "Consider reducing max_workers if this persists."
                 )
+            
+            # Only raise error if CPU usage exceeds the limit
+            if cpu_percent > cpu_limit:
+                raise ResourceLimitExceededError(
+                    f"CPU usage ({cpu_percent:.1f}%) exceeds limit ({cpu_limit}%)"
+                )
+                
         except Exception as e:
             logging.warning(f"Failed to check resource limits: {e}")
 
@@ -221,6 +238,12 @@ def load_config(config_path: str) -> Dict[str, Any]:
         config.setdefault('retry_delay', 5)
         config.setdefault('fallback_datasets', [])
         config.setdefault('output_formats', ['json', 'html'])
+        
+        # Set default resource limits if not specified
+        if 'resource_limits' in config:
+            config['resource_limits'].setdefault('max_memory_mb', 4096)  # 4GB default
+            config['resource_limits'].setdefault('max_cpu_percent', 100)  # 100% default
+            config['resource_limits'].setdefault('cleanup_on_exit', True)
         
         # Validate nested configurations
         if 'logging' in config:
@@ -298,71 +321,18 @@ def validate_tokenizer_path(tokenizer_path: str) -> bool:
 
 def load_test_samples(language_code: str, config: Dict[str, Any]) -> List[str]:
     """Load test samples for a specific language."""
-    sample_size = config['sample_size']
-    failed_datasets = []
-    
-    # First we try the primary dataset
     try:
-        primary_dataset_name = "oscar-corpus/mOSCAR"
-        primary_dataset = load_dataset(
-            primary_dataset_name,
-            dataset_lang_codes[primary_dataset_name],
-            split="train",
-            trust_remote_code=True,
-            data_dir="./datasets"
-        )
-        # Extract just the text from each sample and ensure it's a string
-        test_samples = []
-        for item in primary_dataset.select(range(sample_size)):
-            if isinstance(item, dict) and 'text' in item:
-                text = item['text']
-                if isinstance(text, str):
-                    test_samples.append(text)
-                elif isinstance(text, list):
-                    # Handle case where text is a list of dictionaries
-                    for text_item in text:
-                        if isinstance(text_item, dict) and 'text' in text_item:
-                            inner_text = text_item['text']
-                            if isinstance(inner_text, str):
-                                test_samples.append(inner_text)
-        logging.info(f"Successfully loaded {len(test_samples)} samples for {language_code}")
-        return test_samples
+        samples = []
+        with open('test_samples.txt', 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.startswith(f"{language_code}:"):
+                    # Remove the language code prefix and get the text
+                    text = line.split(':', 1)[1].strip()
+                    samples.append(text)
+        return samples
     except Exception as e:
-        failed_datasets.append(("oscar-corpus/mOSCAR", str(e)))
-        logging.warning(f"Failed to load primary dataset for {language_code}: {e}")
-    
-    # Then we try the fallback datasets
-    for dataset_name in config['fallback_datasets']:
-        try:
-            dataset = load_dataset(
-                dataset_name,
-                dataset_lang_codes[dataset_name],
-                split="train",
-                trust_remote_code=True,
-                data_dir="./datasets"
-            )
-            # Extract just the text from each sample and ensure it's a string
-            test_samples = []
-            for item in dataset.select(range(sample_size)):
-                if isinstance(item, dict) and 'text' in item:
-                    text = item['text']
-                    if isinstance(text, str):
-                        test_samples.append(text)
-                    elif isinstance(text, list):
-                        # Handle case where text is a list of dictionaries
-                        for text_item in text:
-                            if isinstance(text_item, dict) and 'text' in text_item:
-                                inner_text = text_item['text']
-                                if isinstance(inner_text, str):
-                                    test_samples.append(inner_text)
-            logging.info(f"Successfully loaded {len(test_samples)} samples from {dataset_name} for {language_code}")
-            return test_samples
-        except Exception as e:
-            failed_datasets.append((dataset_name, str(e)))
-            logging.warning(f"Failed to load {dataset_name} for {language_code}: {e}")
-    
-    logging.error(f"Failed to load samples for {language_code} from any dataset: {failed_datasets}")
-    return []
+        logging.error(f"Error loading test samples: {e}")
+        return []
 
 def verify_image_file(file_path: Path) -> bool:
     """Verify that a file is a valid image"""
@@ -480,11 +450,11 @@ def save_results(results: Dict[str, Any], config: Dict[str, Any], output_dir: Pa
     except Exception as e:
         raise TokenizerValidationError(f"Error saving results: {e}")
 
-def analyze_tokenization(tokenizer: AutoTokenizer, text: str) -> Optional[Dict[str, Any]]:
+def analyze_tokenization(tokenizer: Tokenizer, text: str) -> Optional[Dict[str, Any]]:
     """Enhanced tokenization analysis with additional metrics"""
     try:
-        tokens = tokenizer.tokenize(text)
-        ids = tokenizer.encode(text)
+        encoding = tokenizer.encode(text)
+        tokens = encoding.tokens
         unique_tokens = set(tokens)
         
         # Calculate token lengths
@@ -499,7 +469,7 @@ def analyze_tokenization(tokenizer: AutoTokenizer, text: str) -> Optional[Dict[s
             "num_tokens": len(tokens),
             "num_chars": len(text),
             "tokens": tokens,
-            "ids": ids,
+            "ids": encoding.ids,
             "unique_token_count": len(unique_tokens),
             "token_length_mean": np.mean(token_lengths),
             "token_length_std": np.std(token_lengths),
@@ -558,7 +528,7 @@ def validate_language(language_code: str, tokenizer_wrapper: TokenizerThreadSafe
                 char_coverages.append(metrics['char_coverage'])
                 token_lengths.extend(metrics['token_lengths'])
                 # Get the actual tokens from the tokenizer
-                tokens = tokenizer_wrapper.get_tokenizer().tokenize(sample)
+                tokens = tokenizer_wrapper.get_tokenizer().encode(sample).tokens
                 unique_tokens.update(tokens)
         
         if not results:
@@ -644,14 +614,17 @@ def visualize_metrics(results, config):
             logging.warning("No valid results to visualize")
             return
 
+        # Set the style for all plots
+        plt.style.use('default')
         sns.set_theme(style="whitegrid")
 
         # 1. Bar plot for tokens per character
         fig1 = plt.figure(figsize=(12, 6))
-        plt.bar(languages, tokens_per_char)
-        plt.title('Average Tokens per Character by Language')
-        plt.ylabel('Avg Tokens per Char')
-        plt.xticks(rotation=45)
+        plt.bar(languages, tokens_per_char, color='skyblue')
+        plt.title('Average Tokens per Character by Language', fontsize=14)
+        plt.ylabel('Avg Tokens per Char', fontsize=12)
+        plt.xticks(rotation=45, ha='right')
+        plt.grid(True, linestyle='--', alpha=0.7)
         plt.tight_layout()
         fig1.savefig(str(output_dir / 'tokens_per_char.png'), format='png', dpi=300, bbox_inches='tight')
         plt.close(fig1)
@@ -678,7 +651,7 @@ def visualize_metrics(results, config):
         fig2, ax2 = plt.subplots(figsize=(max(8, len(languages)), 8))
         sns.heatmap(metrics_matrix, annot=True, fmt='.2f', cmap='YlOrRd',
                    yticklabels=metric_labels, xticklabels=languages, ax=ax2)
-        plt.title('Validation Metrics Heatmap')
+        plt.title('Validation Metrics Heatmap', fontsize=14)
         plt.tight_layout()
         fig2.savefig(str(output_dir / 'metrics_heatmap.png'), format='png', dpi=300, bbox_inches='tight')
         plt.close(fig2)
@@ -688,21 +661,24 @@ def visualize_metrics(results, config):
         scatter = plt.scatter(sample_counts, tokens_per_char, c=anomaly_counts,
                             cmap='coolwarm', alpha=0.7, s=100)
         for i, lang in enumerate(languages):
-            plt.annotate(lang, (sample_counts[i], tokens_per_char[i]), fontsize=9, ha='right')
-        plt.xlabel('Number of Samples')
-        plt.ylabel('Average Tokens per Character')
-        plt.title('Sample Size vs Tokenization Ratio (color=anomalies)')
+            plt.annotate(lang, (sample_counts[i], tokens_per_char[i]), 
+                        fontsize=9, ha='right', va='bottom')
+        plt.xlabel('Number of Samples', fontsize=12)
+        plt.ylabel('Average Tokens per Character', fontsize=12)
+        plt.title('Sample Size vs Tokenization Ratio (color=anomalies)', fontsize=14)
         plt.colorbar(scatter, label='Anomaly Count')
+        plt.grid(True, linestyle='--', alpha=0.7)
         plt.tight_layout()
         fig3.savefig(str(output_dir / 'consistency_scatter.png'), format='png', dpi=300, bbox_inches='tight')
         plt.close(fig3)
 
         # 4. Bar plot for character coverage
         fig4 = plt.figure(figsize=(12, 6))
-        plt.bar(languages, char_coverage)
-        plt.title('Character Coverage by Language')
-        plt.ylabel('Coverage Ratio')
-        plt.xticks(rotation=45)
+        plt.bar(languages, char_coverage, color='lightgreen')
+        plt.title('Character Coverage by Language', fontsize=14)
+        plt.ylabel('Coverage Ratio', fontsize=12)
+        plt.xticks(rotation=45, ha='right')
+        plt.grid(True, linestyle='--', alpha=0.7)
         plt.tight_layout()
         fig4.savefig(str(output_dir / 'char_coverage.png'), format='png', dpi=300, bbox_inches='tight')
         plt.close(fig4)

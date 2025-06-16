@@ -1,0 +1,5 @@
+sv: Hej! Detta är en test på svenska. Vi testar tokenizern med några enkla meningar.
+no: Hei! Dette er en test på norsk. Vi tester tokenizeren med noen enkle setninger.
+da: Hej! Dette er en test på dansk. Vi tester tokenizeren med nogle simple sætninger.
+fi: Hei! Tämä on testi suomeksi. Testaamme tokenizeria muutamalla yksinkertaisella lauseella.
+is: Halló! Þetta er prófun á íslensku. Við prófum tokenizer með nokkrum einföldum setningum. 

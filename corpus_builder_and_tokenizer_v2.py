@@ -11,6 +11,7 @@ from datasets import load_dataset, get_dataset_config_names
 from tokenizers import ByteLevelBPETokenizer
 import random
 import yaml
+import json
 
 # Move logging configuration to after click options
 logger = logging.getLogger(__name__)
@@ -213,6 +214,30 @@ def initialize_embedding_matrix(tokenizer, embedding_dim):
         logger.error(f"Failed to initialize embedding matrix: {e}", exc_info=True)
         raise
 
+def save_tokenizer_config(tokenizer_dir, vocab_size, embedding_dim, special_tokens):
+    """Save tokenizer configuration to config.json"""
+    config = {
+        "model_type": "byte_level_bpe",
+        "vocab_size": vocab_size,
+        "embedding_dim": embedding_dim,
+        "special_tokens": special_tokens,
+        "max_position_embeddings": 2048,  # Common default value
+        "pad_token": special_tokens["pad_token"],
+        "bos_token": special_tokens["bos_token"],
+        "eos_token": special_tokens["eos_token"],
+        "unk_token": special_tokens["unk_token"],
+        "mask_token": special_tokens["mask_token"]
+    }
+    
+    config_path = os.path.join(tokenizer_dir, "config.json")
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2)
+        logger.info(f"Saved tokenizer config to {config_path}")
+    except Exception as e:
+        logger.error(f"Failed to save tokenizer config: {e}", exc_info=True)
+        raise
+
 @click.command()
 @click.option('--config', '-c', type=click.Path(exists=True), help='Path to config file')
 @click.option('--source', multiple=True, help="Corpus source: local file, http(s) URL, or Hugging Face dataset using hf::dataset[:config][:split][:field][:pct] syntax. Use config 'all' for all languages. (Can be repeated)")
@@ -235,6 +260,7 @@ def main(config, source, tokenizer_dir, vocab_size, min_line_length, embedding_d
         embedding_dim = embedding_dim or config_data.get('tokenizer', {}).get('embedding_dim', 1024)
         max_workers = max_workers or config_data.get('processing', {}).get('max_workers', 4)
         log_level = log_level or config_data.get('logging', {}).get('level', 'INFO')
+        special_tokens = config_data.get('tokenizer', {}).get('special_tokens', SPECIAL_TOKENS)
     
     # Set max_samples if in test mode
     max_samples = 100 if test_mode else None
@@ -258,6 +284,9 @@ def main(config, source, tokenizer_dir, vocab_size, min_line_length, embedding_d
         logger.info("Step 3: Initialize embedding matrix")
         weights = initialize_embedding_matrix(tokenizer, embedding_dim)
         np.save(os.path.join(tokenizer_dir, "embedding_matrix.npy"), weights.cpu().numpy())
+        
+        logger.info("Step 4: Save tokenizer config")
+        save_tokenizer_config(tokenizer_dir, vocab_size, embedding_dim, special_tokens)
         
         logger.info("All steps completed successfully.")
     except KeyboardInterrupt:

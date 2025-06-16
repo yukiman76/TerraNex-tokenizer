@@ -1,7 +1,7 @@
 # Tokenizer validation configuration
 
 # Paths
-tokenizer_path: "european_tokenizer"
+tokenizer_path: "custom_tokenizer"
 output_dir: "tokenizer_analysis"
 log_dir: "logs"
 temp_dir: "temp"  # Directory for temporary files
