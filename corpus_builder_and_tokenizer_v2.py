@@ -13,12 +13,9 @@ from tokenizers import ByteLevelBPETokenizer
 from transformers import PreTrainedTokenizerFast
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import random
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+# Move logging configuration to after click options
 logger = logging.getLogger(__name__)
 
 SPECIAL_TOKENS = {
@@ -55,33 +52,58 @@ def yield_lines_from_file(file_path):
         logger.warning(f"Failed to read from file {file_path}: {e}")
 
 def extract_hf_dataset(dataset_name, config=None, split="train", field="auto", max_pct=1.0, streaming=True, min_line_length=32):
+    logger.info(f"Loading dataset {dataset_name} with config={config}, split={split}, field={field}, max_pct={max_pct}")
     try:
-        ds_split = split if max_pct == 1.0 else f"{split}[:{max_pct}%]"
-        ds = load_dataset(
-            dataset_name, config, split=ds_split,
-            streaming=streaming, trust_remote_code=True
-        ) if config else load_dataset(
-            dataset_name, split=ds_split, streaming=streaming, trust_remote_code=True
-        )
-        # Field auto-detection
+        dataset = load_dataset(dataset_name, config, split=split, streaming=streaming)
+        logger.info(f"Dataset loaded successfully. Streaming mode: {streaming}")
+        
         if field == "auto":
-            first = next(iter(ds))
-            candidates = [k for k in first.keys() if isinstance(first[k], (str, list))]
-            field = candidates[0] if candidates else list(first.keys())[0]
-            logger.info(f"[{dataset_name}:{config}] Auto-detected field: {field}")
-        for entry in ds:
-            value = entry.get(field, None)
-            if value:
-                if isinstance(value, list):
-                    s = " ".join([str(ss) for ss in value if ss])
+            # Get the first item to detect fields
+            first_item = next(iter(dataset))
+            # Look for text-like fields (string or list of strings)
+            text_fields = [
+                k for k, v in first_item.items()
+                if isinstance(v, (str, list)) and not k.startswith('_')
+            ]
+            
+            if text_fields:
+                field = text_fields[0]
+                logger.info(f"Auto-detected field '{field}' for {dataset_name} from available fields: {text_fields}")
+            else:
+                # Fallback to first non-special field
+                regular_fields = [k for k in first_item.keys() if not k.startswith('_')]
+                if regular_fields:
+                    field = regular_fields[0]
+                    logger.info(f"No text-like fields found. Using '{field}' as fallback for {dataset_name}")
                 else:
-                    s = str(value)
-                s = s.strip().replace("\n", " ")
-                if len(s) >= min_line_length:
-                    yield s
+                    raise ValueError(f"No suitable fields found in dataset {dataset_name}")
+        
+        total_lines = 0
+        sampled_lines = 0
+        for entry in tqdm(dataset, desc=f"Processing {dataset_name}"):
+            total_lines += 1
+            if total_lines % 10000 == 0:
+                logger.info(f"Processed {total_lines:,} lines from {dataset_name}")
+            
+            if random.random() <= max_pct:
+                value = entry.get(field, "")
+                # Handle both string and list values
+                if isinstance(value, list):
+                    text = " ".join(str(item) for item in value if item)
+                else:
+                    text = str(value)
+                
+                text = text.strip().replace("\n", " ")
+                if len(text) >= min_line_length:
+                    sampled_lines += 1
+                    if sampled_lines % 1000 == 0:
+                        logger.info(f"Sampled {sampled_lines:,} valid lines from {dataset_name}")
+                    yield text
+        
+        logger.info(f"Finished processing {dataset_name}. Total lines: {total_lines:,}, Sampled lines: {sampled_lines:,}")
     except Exception as e:
-        logger.error(f"Failed to load or parse {dataset_name}:{config}: {e}", exc_info=True)
-        return
+        logger.error(f"Error loading dataset {dataset_name}: {str(e)}", exc_info=True)
+        raise
 
 def expand_all_hf_configs(dataset_name):
     try:
@@ -112,48 +134,71 @@ def parse_hf_source(source):
     return dataset, config, split, field, pct
 
 def process_source(source, min_line_length):
+    logger.info(f"Processing source: {source}")
     corpus_lines = []
     if source.startswith("hf::"):
         dataset, config, split, field, pct = parse_hf_source(source)
         configs_to_use = [config]
         if (dataset in {"oscar-corpus/mOSCAR", "statmt/cc100"}) and (not config or config.lower() == "all"):
             configs_to_use = expand_all_hf_configs(dataset)
+            logger.info(f"Expanded configs for {dataset}: {configs_to_use}")
+        
         for c in configs_to_use:
             logger.info(f"Loading dataset: {dataset}, config: {c}")
-            for s in extract_hf_dataset(dataset, c, split, field, pct, streaming=True, min_line_length=min_line_length):
-                corpus_lines.append(s)
+            try:
+                for s in extract_hf_dataset(dataset, c, split, field, pct, streaming=True, min_line_length=min_line_length):
+                    corpus_lines.append(s)
+                logger.info(f"Successfully processed {len(corpus_lines)} lines from {dataset}/{c}")
+            except Exception as e:
+                logger.error(f"Failed to process {dataset}/{c}: {str(e)}", exc_info=True)
+                raise
     elif source.startswith("http://") or source.startswith("https://"):
+        logger.info(f"Processing URL source: {source}")
         temp_file = fetch_file_from_url(source)
         if temp_file:
             for s in yield_lines_from_file(temp_file):
                 if len(s) >= min_line_length:
                     corpus_lines.append(s)
             os.remove(temp_file)
+            logger.info(f"Processed {len(corpus_lines)} lines from URL source")
     else:
+        logger.info(f"Processing local file: {source}")
         if os.path.exists(source):
             for s in yield_lines_from_file(source):
                 if len(s) >= min_line_length:
                     corpus_lines.append(s)
+            logger.info(f"Processed {len(corpus_lines)} lines from local file")
         else:
             logger.warning(f"File not found: {source}")
+    
+    logger.info(f"Total lines collected from source {source}: {len(corpus_lines):,}")
     return corpus_lines
 
 def build_corpus_parallel(sources, min_line_length, max_workers=4):
+    logger.info(f"Starting parallel corpus building with {max_workers} workers")
     dedup_set = set()
     corpus_lines = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_source = {executor.submit(process_source, source, min_line_length): source for source in sources}
         for future in tqdm(as_completed(future_to_source), total=len(sources), desc="Loading sources in parallel"):
             try:
+                source = future_to_source[future]
                 lines = future.result()
+                logger.info(f"Processing results from {source}: {len(lines):,} lines")
                 for line in lines:
                     key = hashlib.sha1(line.encode('utf-8')).hexdigest()
                     if key not in dedup_set:
                         dedup_set.add(key)
                         corpus_lines.append(line)
+                logger.info(f"Current corpus size after {source}: {len(corpus_lines):,} lines, {len(dedup_set):,} unique lines")
             except Exception as e:
                 logger.error(f"Failed while processing source: {e}", exc_info=True)
-    logger.info(f"Corpus lines after deduplication: {len(corpus_lines):,}")
+                raise
+    
+    logger.info(f"Final corpus statistics:")
+    logger.info(f"- Total lines after deduplication: {len(corpus_lines):,}")
+    logger.info(f"- Unique lines: {len(dedup_set):,}")
+    logger.info(f"- Duplicate lines removed: {len(dedup_set) - len(corpus_lines):,}")
     return corpus_lines
 
 def save_corpus(corpus, output_file):
@@ -270,7 +315,15 @@ def initialize_embedding_matrix(tokenizer, embedding_dim):
 @click.option('--embedding-dim', default=1024, show_default=True, help='Embedding dimension for initialization')
 @click.option('--preview-chars', default=80, show_default=True, help='How many chars of each sample to show in preview logs')
 @click.option('--max_workers', default=4, show_default=True, help='Maximum parallel dataset loaders')
-def main(source, output_corpus, tokenizer_dir, vocab_size, min_line_length, embedding_dim, preview_chars, max_workers):
+@click.option('--log-level', default="INFO", type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set the logging level')
+def main(source, output_corpus, tokenizer_dir, vocab_size, min_line_length, embedding_dim, preview_chars, max_workers, log_level):
+    # Configure logging based on command line option
+    logging.basicConfig(
+        level=getattr(logging, log_level),
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
+    
     try:
         logger.info("Step 1: Build and deduplicate corpus from provided sources")
         corpus = build_corpus_parallel(source, min_line_length, max_workers=max_workers)
