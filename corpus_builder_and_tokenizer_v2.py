@@ -2,7 +2,6 @@ import os
 import sys
 import logging
 import click
-import hashlib
 import tempfile
 import requests
 import torch
@@ -14,15 +13,8 @@ from transformers import PreTrainedTokenizerFast
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import random
-import yaml
-from typing import List
-import argparse
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+# Move logging configuration to after click options
 logger = logging.getLogger(__name__)
 
 SPECIAL_TOKENS = {
@@ -52,9 +44,9 @@ def yield_lines_from_file(file_path):
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             for line in f:
-                l = line.strip()
-                if l:
-                    yield l
+                line_text = line.strip()
+                if line_text:
+                    yield line_text
     except Exception as e:
         logger.warning(f"Failed to read from file {file_path}: {e}")
 
@@ -125,9 +117,12 @@ def parse_hf_source(source):
     split = "train"
     field = "auto"
     pct = 1.0
-    if len(parts) > 1 and parts[1]: config = parts[1]
-    if len(parts) > 2 and parts[2]: split = parts[2]
-    if len(parts) > 3 and parts[3]: field = parts[3]
+    if len(parts) > 1 and parts[1]:
+        config = parts[1]
+    if len(parts) > 2 and parts[2]:
+        split = parts[2]
+    if len(parts) > 3 and parts[3]:
+        field = parts[3]
     if len(parts) > 4 and parts[4]:
         try:
             pct = float(parts[4])
@@ -179,7 +174,6 @@ def process_source(source, min_line_length):
 
 def build_corpus_parallel(sources, min_line_length, max_workers=4):
     logger.info(f"Starting parallel corpus building with {max_workers} workers")
-    dedup_set = set()
     corpus_lines = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_source = {executor.submit(process_source, source, min_line_length): source for source in sources}
@@ -188,20 +182,14 @@ def build_corpus_parallel(sources, min_line_length, max_workers=4):
                 source = future_to_source[future]
                 lines = future.result()
                 logger.info(f"Processing results from {source}: {len(lines):,} lines")
-                for line in lines:
-                    key = hashlib.sha1(line.encode('utf-8')).hexdigest()
-                    if key not in dedup_set:
-                        dedup_set.add(key)
-                        corpus_lines.append(line)
-                logger.info(f"Current corpus size after {source}: {len(corpus_lines):,} lines, {len(dedup_set):,} unique lines")
+                corpus_lines.extend(lines)
+                logger.info(f"Current corpus size after {source}: {len(corpus_lines):,} lines")
             except Exception as e:
                 logger.error(f"Failed while processing source: {e}", exc_info=True)
                 raise
     
-    logger.info(f"Final corpus statistics:")
-    logger.info(f"- Total lines after deduplication: {len(corpus_lines):,}")
-    logger.info(f"- Unique lines: {len(dedup_set):,}")
-    logger.info(f"- Duplicate lines removed: {len(dedup_set) - len(corpus_lines):,}")
+    logger.info("Final corpus statistics:")
+    logger.info(f"- Total lines: {len(corpus_lines):,}")
     return corpus_lines
 
 def save_corpus(corpus, output_file):
@@ -223,7 +211,7 @@ def save_corpus(corpus, output_file):
         if os.path.exists(output_file):
             size = os.path.getsize(output_file)
             lines = sum(1 for _ in open(output_file, 'r', encoding='utf-8'))
-            logger.info(f"Corpus saved successfully:")
+            logger.info("Corpus saved successfully:")
             logger.info(f"- File: {abs_path}")
             logger.info(f"- Size: {size:,} bytes")
             logger.info(f"- Lines: {lines:,}")
@@ -234,144 +222,20 @@ def save_corpus(corpus, output_file):
         logger.error(f"Failed to save corpus: {e}", exc_info=True)
         sys.exit(1)
 
-def stream_text_from_dataset(dataset_name, config=None, split="train", field="text"):
-    """Stream text directly from a dataset."""
-    try:
-        dataset = load_dataset(dataset_name, config, split=split, streaming=True)
-        for item in dataset:
-            if field in item and item[field]:
-                text = str(item[field]).strip()
-                if text:
-                    yield text
-    except Exception as e:
-        logger.error(f"Error streaming from {dataset_name}: {e}")
-
-def train_tokenizer_streaming(sources, vocab_size, output_dir, embedding_dim, max_workers=4):
-    """Train tokenizer using streaming approach."""
+def train_tokenizer(corpus_file, vocab_size, output_dir):
     try:
         tokenizer = ByteLevelBPETokenizer()
-        valid_sources = []
-        
-        # First validate all sources
-        logger.info("Validating data sources...")
-        for source in sources:
-            if source.startswith("hf::"):
-                parts = source[4:].split(":")
-                dataset_name = parts[0]
-                config = parts[1] if len(parts) > 1 else None
-                split = parts[2] if len(parts) > 2 else "train"
-                field = parts[3] if len(parts) > 3 else "text"
-                
-                try:
-                    # Test if we can access the dataset
-                    dataset = load_dataset(dataset_name, config, split=split, streaming=True)
-                    next(iter(dataset))  # Try to get first item
-                    valid_sources.append((source, dataset_name, config, split, field))
-                    logger.info(f"Validated dataset: {dataset_name}")
-                except Exception as e:
-                    logger.error(f"Error validating dataset {dataset_name}: {e}")
-            else:
-                # For local files, check if they exist
-                if os.path.exists(source):
-                    valid_sources.append((source, None, None, None, None))
-                    logger.info(f"Validated local file: {source}")
-                else:
-                    logger.error(f"Local file not found: {source}")
-        
-        if not valid_sources:
-            raise ValueError("No valid data sources found")
-        
-        def text_iterator():
-            for source_info in valid_sources:
-                source, dataset_name, config, split, field = source_info
-                if dataset_name:  # HuggingFace dataset
-                    dataset = load_dataset(dataset_name, config, split=split, streaming=True)
-                    for item in dataset:
-                        if field in item and item[field]:
-                            text = str(item[field]).strip()
-                            if text:
-                                yield text
-                else:  # Local file
-                    with open(source, 'r', encoding='utf-8') as f:
-                        for line in f:
-                            line = line.strip()
-                            if line:
-                                yield line
-
-        # Train the tokenizer
-        logger.info("Training tokenizer...")
-        tokenizer.train_from_iterator(
-            text_iterator(),
+        tokenizer.train(
+            files=[corpus_file],
             vocab_size=vocab_size,
             min_frequency=2,
             special_tokens=list(SPECIAL_TOKENS.values())
         )
-        
         os.makedirs(output_dir, exist_ok=True)
         tokenizer.save_model(output_dir)
         logger.info(f"Tokenizer trained and saved to {output_dir}")
-        
-        # Count frequencies
-        logger.info("Counting token frequencies...")
-        freq = defaultdict(int)
-        total = 0
-        
-        def process_source(source_info):
-            nonlocal total
-            source, dataset_name, config, split, field = source_info
-            try:
-                if dataset_name:  # HuggingFace dataset
-                    dataset = load_dataset(dataset_name, config, split=split, streaming=True)
-                    for item in dataset:
-                        if field in item and item[field]:
-                            text = str(item[field]).strip()
-                            if text:
-                                ids = tokenizer.encode(text)
-                                for i in ids:
-                                    freq[i] += 1
-                                    total += 1
-                else:  # Local file
-                    with open(source, 'r', encoding='utf-8') as f:
-                        for line in f:
-                            line = line.strip()
-                            if line:
-                                ids = tokenizer.encode(line)
-                                for i in ids:
-                                    freq[i] += 1
-                                    total += 1
-            except Exception as e:
-                logger.error(f"Error processing source {source}: {e}")
-        
-        # Process sources in parallel
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            list(executor.map(process_source, valid_sources))
-        
-        if total == 0:
-            logger.warning("No tokens were processed during frequency counting")
-            return tokenizer
-        
-        # Save token frequency statistics
-        stats_file = os.path.join(output_dir, "token_stats.txt")
-        freq_sorted = sorted(freq.items(), key=lambda x: x[1], reverse=True)
-        with open(stats_file, "w", encoding="utf-8") as fstat:
-            for i, count in freq_sorted:
-                try:
-                    tok_str = tokenizer.decode([i])
-                except Exception:
-                    tok_str = f"<ID_{i}>"
-                fstat.write(f"{tok_str}\t{i}\t{count}\n")
-        
-        logger.info(f"Token frequency stats saved to {stats_file}. Top 10 tokens:")
-        for i, count in freq_sorted[:10]:
-            try:
-                tok_str = tokenizer.decode([i])
-            except Exception:
-                tok_str = f"<ID_{i}>"
-            logger.info(f"Token: '{tok_str}' (id={i})  count={count}")
-        
-        return tokenizer
     except Exception as e:
-        logger.error(f"Failed to train tokenizer: {e}", exc_info=True)
+        logger.error(f"Failed to train or save tokenizer: {e}", exc_info=True)
         sys.exit(1)
 
 def validate_tokenizer(tokenizer_dir):
@@ -410,7 +274,6 @@ def preview_tokenization(tokenizer, corpus, num_samples=5, preview_chars=80):
 def token_frequency_stats(tokenizer, corpus_file, stats_file):
     logger.info("Calculating token frequency statistics...")
     try:
-        vocab_size = getattr(tokenizer, "vocab_size", len(tokenizer))
         freq = defaultdict(int)
         total = 0
         with open(corpus_file, "r", encoding="utf-8") as f:
@@ -442,12 +305,9 @@ def token_frequency_stats(tokenizer, corpus_file, stats_file):
         sys.exit(1)
 
 def initialize_embedding_matrix(tokenizer, embedding_dim):
-    """Initialize embedding matrix for the tokenizer."""
+    logger.info(f"Initializing embedding matrix for vocab_size={getattr(tokenizer, 'vocab_size', len(tokenizer))}, embedding_dim={embedding_dim}")
     try:
-        # Get vocab size from the tokenizer's vocabulary
-        vocab_size = len(tokenizer.get_vocab())
-        logger.info(f"Initializing embedding matrix for vocab_size={vocab_size}, embedding_dim={embedding_dim}")
-        
+        vocab_size = getattr(tokenizer, "vocab_size", len(tokenizer))
         weights = torch.empty((vocab_size, embedding_dim))
         torch.nn.init.normal_(weights, mean=0.0, std=0.02)
         logger.info(f"Embedding matrix shape: {weights.shape}")
@@ -456,171 +316,46 @@ def initialize_embedding_matrix(tokenizer, embedding_dim):
         logger.error(f"Failed to initialize embedding matrix: {e}", exc_info=True)
         raise
 
-def load_config(config_path: str) -> dict:
-    """Load configuration from YAML file."""
-    try:
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-        return config
-    except Exception as e:
-        logging.error(f"Error loading config file: {e}")
-        return {}
-
-def get_dataset_sources_for_language(language: str, config: dict) -> List[str]:
-    """Generate dataset sources for a specific language."""
-    sources = []
-    fallback_datasets = config.get('fallback_datasets', [])
-    
-    # Map language codes to dataset configs
-    lang_configs = {
-        'sv': {'oscar': 'swe_Latn', 'cc100': 'sv'},  # Swedish
-        'no': {'oscar': 'nor_Latn', 'cc100': 'no'},  # Norwegian
-        'da': {'oscar': 'dan_Latn', 'cc100': 'da'},  # Danish
-        'fi': {'oscar': 'fin_Latn', 'cc100': 'fi'},  # Finnish
-        'de': {'oscar': 'deu_Latn', 'cc100': 'de'},  # German
-        'fr': {'oscar': 'fra_Latn', 'cc100': 'fr'},  # French
-        'es': {'oscar': 'spa_Latn', 'cc100': 'es'},  # Spanish
-        'it': {'oscar': 'ita_Latn', 'cc100': 'it'},  # Italian
-        'nl': {'oscar': 'nld_Latn', 'cc100': 'nl'},  # Dutch
-        'pl': {'oscar': 'pol_Latn', 'cc100': 'pl'},  # Polish
-        'pt': {'oscar': 'por_Latn', 'cc100': 'pt'},  # Portuguese
-        'ru': {'oscar': 'rus_Cyrl', 'cc100': 'ru'},  # Russian
-        'cs': {'oscar': 'ces_Latn', 'cc100': 'cs'},  # Czech
-        'hu': {'oscar': 'hun_Latn', 'cc100': 'hu'},  # Hungarian
-        'ro': {'oscar': 'ron_Latn', 'cc100': 'ro'},  # Romanian
-        'bg': {'oscar': 'bul_Cyrl', 'cc100': 'bg'},  # Bulgarian
-        'el': {'oscar': 'ell_Grek', 'cc100': 'el'},  # Greek
-        'hr': {'oscar': 'hrv_Latn', 'cc100': 'hr'},  # Croatian
-        'sk': {'oscar': 'slk_Latn', 'cc100': 'sk'},  # Slovak
-        'sl': {'oscar': 'slv_Latn', 'cc100': 'sl'},  # Slovenian
-    }
-    
-    if language not in lang_configs:
-        logging.warning(f"No dataset configuration found for language: {language}")
-        return sources
-    
-    lang_config = lang_configs[language]
-    
-    # Add mOSCAR dataset
-    if 'oscar-corpus/mOSCAR' in fallback_datasets:
-        sources.append(f"hf::oscar-corpus/mOSCAR:{lang_config['oscar']}:train:text:0.05")
-    
-    # Add CC100 dataset
-    if 'statmt/cc100' in fallback_datasets:
-        sources.append(f"hf::statmt/cc100:{lang_config['cc100']}:train:text:0.05")
-    
-    return sources
-
-def main():
-    parser = argparse.ArgumentParser(description='Build corpus and train tokenizer')
-    parser.add_argument('--source', action='append', help='Data source in format hf::dataset:config:split:field:percentage')
-    parser.add_argument('--output-corpus', default='corpus.txt', help='Output corpus file path')
-    parser.add_argument('--output-tokenizer', default='custom_tokenizer', help='Output tokenizer directory')
-    parser.add_argument('--vocab-size', type=int, default=128000, help='Vocabulary size')
-    parser.add_argument('--embedding-dim', type=int, default=1024, help='Embedding dimension')
-    parser.add_argument('--max_workers', type=int, default=4, help='Maximum number of worker processes')
-    parser.add_argument('--config', default='config.yaml', help='Path to config file')
-    args = parser.parse_args()
-    
-    # Load config
-    try:
-        with open(args.config, 'r') as f:
-            config = yaml.safe_load(f)
-    except Exception as e:
-        logging.error(f"Error loading config file: {e}")
-        return
-    
-    # Get languages from config
-    languages = config.get('languages', [])
-    if not languages:
-        logging.error("No languages specified in config file")
-        return
-    
-    # Map language codes to dataset configs
-    lang_configs = {
-        'sv': {'oscar': 'swe_Latn', 'cc100': 'sv'},  # Swedish
-        'no': {'oscar': 'nor_Latn', 'cc100': 'no'},  # Norwegian
-        'da': {'oscar': 'dan_Latn', 'cc100': 'da'},  # Danish
-        'fi': {'oscar': 'fin_Latn', 'cc100': 'fi'},  # Finnish
-        'de': {'oscar': 'deu_Latn', 'cc100': 'de'},  # German
-        'fr': {'oscar': 'fra_Latn', 'cc100': 'fr'},  # French
-        'es': {'oscar': 'spa_Latn', 'cc100': 'es'},  # Spanish
-        'it': {'oscar': 'ita_Latn', 'cc100': 'it'},  # Italian
-        'nl': {'oscar': 'nld_Latn', 'cc100': 'nl'},  # Dutch
-        'pl': {'oscar': 'pol_Latn', 'cc100': 'pl'},  # Polish
-        'pt': {'oscar': 'por_Latn', 'cc100': 'pt'},  # Portuguese
-        'ru': {'oscar': 'rus_Cyrl', 'cc100': 'ru'},  # Russian
-        'cs': {'oscar': 'ces_Latn', 'cc100': 'cs'},  # Czech
-        'hu': {'oscar': 'hun_Latn', 'cc100': 'hu'},  # Hungarian
-        'ro': {'oscar': 'ron_Latn', 'cc100': 'ro'},  # Romanian
-        'bg': {'oscar': 'bul_Cyrl', 'cc100': 'bg'},  # Bulgarian
-        'el': {'oscar': 'ell_Grek', 'cc100': 'el'},  # Greek
-        'hr': {'oscar': 'hrv_Latn', 'cc100': 'hr'},  # Croatian
-        'sk': {'oscar': 'slk_Latn', 'cc100': 'sk'},  # Slovak
-        'sl': {'oscar': 'slv_Latn', 'cc100': 'sl'},  # Slovenian
-    }
-    
-    # Generate sources for all languages
-    all_sources = []
-    fallback_datasets = config.get('fallback_datasets', [])
-    
-    for lang in languages:
-        if lang not in lang_configs:
-            logging.warning(f"No dataset configuration found for language: {lang}")
-            continue
-            
-        lang_config = lang_configs[lang]
-        
-        # Add mOSCAR dataset
-        if 'oscar-corpus/mOSCAR' in fallback_datasets:
-            all_sources.append(f"hf::oscar-corpus/mOSCAR:{lang_config['oscar']}:train:text:0.05")
-        
-        # Add CC100 dataset
-        if 'statmt/cc100' in fallback_datasets:
-            all_sources.append(f"hf::statmt/cc100:{lang_config['cc100']}:train:text:0.05")
-    
-    # Add any manually specified sources
-    if args.source:
-        all_sources.extend(args.source)
-    
-    if not all_sources:
-        logging.error("No valid data sources found")
-        return
-    
-    # Remove duplicates while preserving order
-    all_sources = list(dict.fromkeys(all_sources))
-    
-    logging.info(f"Training tokenizer on {len(all_sources)} sources for {len(languages)} languages")
-    for source in all_sources:
-        logging.info(f"Source: {source}")
+@click.command()
+@click.option('--source', multiple=True, required=True, help="Corpus source: local file, http(s) URL, or Hugging Face dataset using hf::dataset[:config][:split][:field][:pct] syntax. Use config 'all' for all languages. (Can be repeated)")
+@click.option('--output-corpus', default="corpus.txt", show_default=True, help='Path to output corpus txt')
+@click.option('--tokenizer-dir', default="custom_tokenizer", show_default=True, help='Directory to save the tokenizer')
+@click.option('--vocab-size', default=52000, show_default=True, help='Vocabulary size for tokenizer')
+@click.option('--min-line-length', default=32, show_default=True, help='Minimum length for a corpus line')
+@click.option('--embedding-dim', default=1024, show_default=True, help='Embedding dimension for initialization')
+@click.option('--preview-chars', default=80, show_default=True, help='How many chars of each sample to show in preview logs')
+@click.option('--max_workers', default=4, show_default=True, help='Maximum parallel dataset loaders')
+@click.option('--log-level', default="INFO", type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set the logging level')
+def main(source, output_corpus, tokenizer_dir, vocab_size, min_line_length, embedding_dim, preview_chars, max_workers, log_level):
+    # Configure logging based on command line option
+    logging.basicConfig(
+        level=getattr(logging, log_level),
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
     
     try:
-        # Train tokenizer using streaming approach
-        train_tokenizer_streaming(
-            sources=all_sources,
-            output_dir=args.output_tokenizer,
-            vocab_size=args.vocab_size,
-            embedding_dim=args.embedding_dim,
-            max_workers=args.max_workers
-        )
-        
-        # Validate tokenizer
-        validate_tokenizer(
-            tokenizer_dir=args.output_tokenizer,
-            output_dir=args.output_tokenizer,
-            sample_size=config.get('sample_size', 100),
-            max_workers=args.max_workers
-        )
-        
-        # Initialize embedding matrix
-        initialize_embedding_matrix(
-            tokenizer_dir=args.output_tokenizer,
-            embedding_dim=args.embedding_dim
-        )
-        
-    except Exception as e:
-        logging.error(f"Error in main process: {e}")
-        raise
+        logger.info("Step 1: Build and deduplicate corpus from provided sources")
+        corpus = build_corpus_parallel(source, min_line_length, max_workers=max_workers)
+        save_corpus(corpus, output_corpus)
+        logger.info("Step 2: Train tokenizer")
+        train_tokenizer(output_corpus, vocab_size, tokenizer_dir)
+        logger.info("Step 3: Validate tokenizer")
+        tokenizer = validate_tokenizer(tokenizer_dir)
+        logger.info("Step 4: Preview tokenization")
+        preview_tokenization(tokenizer, corpus, preview_chars=preview_chars)
+        logger.info("Step 5: Token frequency statistics")
+        token_frequency_stats(tokenizer, output_corpus, os.path.join(tokenizer_dir, "token_stats.txt"))
+        logger.info("Step 6: Embedding matrix initialization")
+        weights = initialize_embedding_matrix(tokenizer, embedding_dim)
+        np.save(os.path.join(tokenizer_dir, "embedding_matrix.npy"), weights.cpu().numpy())
+        logger.info("All steps completed successfully.")
+    except KeyboardInterrupt:
+        logger.warning("Process interrupted by user. Exiting gracefully.")
+        sys.exit(0)
+    except Exception:
+        logger.error("Critical failure. Aborting.", exc_info=True)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
