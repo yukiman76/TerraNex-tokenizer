@@ -10,11 +10,19 @@ import numpy as np
 from tqdm import tqdm
 from datasets import Dataset, load_dataset
 from tokenizers import ByteLevelBPETokenizer
+
 # from transformers import PreTrainedTokenizerFast
 from transformers import GPT2TokenizerFast
 
 # Move logging configuration to after click options
 logger = logging.getLogger(__name__)
+
+
+class DSLoader:
+    dataset: Dataset = None
+    affected_field: str = None
+    dataset_name: str = None
+
 
 SPECIAL_TOKENS = {
     "pad_token": "<pad>",
@@ -24,47 +32,35 @@ SPECIAL_TOKENS = {
     "mask_token": "<mask>",
 }
 
-data_sets = [
-    "bigcode/the-stack-march-sample-special-tokens-stripped",  # 1.1G
-    "codeparrot/github-code",  # 1.1 TB
-    # "bigcode/the-stack-github-issues",  # 66.6 G
-    # "iohadrubin/wikitext-103-raw-v1",  # 310M
-]
-
-
-def get_field(dataset):
-    if "text" in dataset.features:
-        field = "text"
-    else:
-        text_fields = []
-        for f in dataset.features.keys():
-            if dataset.features[f].dtype in ("string"):
-                if f not in SPECIAL_TOKENS.keys():
-                    text_fields.append(f)
-
-        if text_fields:
-            field = text_fields[0]
-        else:
-            field = None
-
-    return field
+data_sets = {
+    "bigcode/the-stack-march-sample-special-tokens-stripped": "content",  # 1.1G
+    "codeparrot/github-code": "code",  # 1.1 TB
+    "bigcode/the-stack-github-issues": "content",  # 66.6 G
+    "iohadrubin/wikitext-103-raw-v1": "text",  # 310M
+}
 
 
 def load_all_datasets(max_workers=4, streaming=True, sample=None):
     for dataset_name in data_sets:
-        dataset = load_dataset(
+        d = DSLoader()
+        d.dataset = load_dataset(
             dataset_name,
             split="train",
             streaming=streaming,
             #    num_proc=max_workers,
             cache_dir="./datasets",
         )
+        # lets set some helpers
+        d.affected_field = data_sets[dataset_name]
+        d.dataset_name = dataset_name
         if sample:
-            shuffled_dataset = dataset.shuffle(seed=42)
+            shuffled_dataset = d.dataset.shuffle(seed=42)
+            shuffled_dataset.affected_field = data_sets[dataset_name]
+            shuffled_dataset.dataset_name = dataset_name
             sampled_list = list(itertools.islice(shuffled_dataset, sample))
-            sampled_dataset = Dataset.from_list(sampled_list)
+            d.dataset = Dataset.from_list(sampled_list)
 
-        yield sampled_dataset
+        yield d
 
 
 def initialize_embedding_matrix(tokenizer, embedding_dim=1024):
@@ -84,17 +80,17 @@ def initialize_embedding_matrix(tokenizer, embedding_dim=1024):
 
 def batch_iterator(my_datasets, batch_size=10_000):
     i_ds = 1
-    for dataset in tqdm(my_datasets, desc="Processing"):
-        field = get_field(dataset)
-        for i in tqdm(dataset, desc=f"Processing dataset {i_ds} "):
-            k = dataset[field]
+    for d in tqdm(my_datasets, desc="Processing"):
+        for i in tqdm(d.dataset, desc=f"Processing dataset {d.dataset_name} {i_ds} "):
+            k = d.dataset[d.affected_field]
             if isinstance(k, list):
                 s = "".join(k)
             else:
                 s = k
+
             for p in range(0, len(s), batch_size):
                 # print(s[p: p+batch_size])
-                yield s[p: p+batch_size]
+                yield s[p : p + batch_size]
         i_ds += 1
 
 
