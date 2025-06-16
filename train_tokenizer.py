@@ -164,7 +164,7 @@ def batch_iterator(my_datasets, batch_size=10_000):
 def train_tokenizer(vocab_size, output_dir, max_workers):
     try:
         logger.info("Step 1: Build and deduplicate corpus from provided sources")
-        my_datasets = load_all_datasets(max_workers=max_workers, sample=100)
+        my_datasets = load_all_datasets(max_workers=max_workers, sample=None)
         tokenizer = ByteLevelBPETokenizer()
         tokenizer.train_from_iterator(
             batch_iterator(my_datasets),
