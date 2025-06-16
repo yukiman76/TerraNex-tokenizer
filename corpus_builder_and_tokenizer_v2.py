@@ -57,26 +57,22 @@ def extract_hf_dataset(dataset_name, config=None, split="train", field="auto", m
         dataset = load_dataset(dataset_name, config, split=split, streaming=streaming)
         logger.info(f"Dataset loaded successfully. Streaming mode: {streaming}")
         
-        if field == "auto":
-            # Get the first item to detect fields
-            first_item = next(iter(dataset))
-            # Look for text-like fields (string or list of strings)
-            text_fields = [
-                k for k, v in first_item.items()
-                if isinstance(v, (str, list)) and not k.startswith('_')
-            ]
+        # First try to use the 'text' field
+        if "text" in dataset.features:
+            field = "text"
+            logger.info(f"Using 'text' field for dataset {dataset_name}")
+        else:
+            # Look for any field that might contain text
+            text_fields = [f for f in dataset.features.keys() 
+                         if isinstance(dataset.features[f], (str, list)) 
+                         and f not in SPECIAL_TOKENS.keys()]
             
             if text_fields:
                 field = text_fields[0]
-                logger.info(f"Auto-detected field '{field}' for {dataset_name} from available fields: {text_fields}")
+                logger.info(f"Using field '{field}' for {dataset_name}")
             else:
-                # Fallback to first non-special field
-                regular_fields = [k for k in first_item.keys() if not k.startswith('_')]
-                if regular_fields:
-                    field = regular_fields[0]
-                    logger.info(f"No text-like fields found. Using '{field}' as fallback for {dataset_name}")
-                else:
-                    raise ValueError(f"No suitable fields found in dataset {dataset_name}")
+                logger.warning(f"Could not find any text fields in {dataset_name}")
+                field = None
         
         total_lines = 0
         sampled_lines = 0
@@ -203,10 +199,30 @@ def build_corpus_parallel(sources, min_line_length, max_workers=4):
 
 def save_corpus(corpus, output_file):
     try:
+        abs_path = os.path.abspath(output_file)
+        logger.info(f"Starting to save corpus to: {abs_path}")
+        logger.info(f"Corpus contains {len(corpus):,} lines")
+        
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else '.', exist_ok=True)
+        
         with open(output_file, "w", encoding="utf-8") as f:
-            for line in tqdm(corpus, desc="Saving corpus"):
+            for i, line in enumerate(tqdm(corpus, desc="Saving corpus")):
                 f.write(line + "\n")
-        logger.info(f"Saved corpus to {output_file}")
+                if (i + 1) % 100000 == 0:
+                    logger.info(f"Saved {i + 1:,} lines to {abs_path}")
+        
+        # Verify the file was created and has content
+        if os.path.exists(output_file):
+            size = os.path.getsize(output_file)
+            lines = sum(1 for _ in open(output_file, 'r', encoding='utf-8'))
+            logger.info(f"Corpus saved successfully:")
+            logger.info(f"- File: {abs_path}")
+            logger.info(f"- Size: {size:,} bytes")
+            logger.info(f"- Lines: {lines:,}")
+        else:
+            raise Exception(f"File {abs_path} was not created")
+            
     except Exception as e:
         logger.error(f"Failed to save corpus: {e}", exc_info=True)
         sys.exit(1)
