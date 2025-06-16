@@ -34,12 +34,12 @@ SPECIAL_TOKENS = {
 }
 
 data_sets = {
-    "bigcode/the-stack-march-sample-special-tokens-stripped": {
-        "field": "content",
-        "extra": [],
-    },  # 1.1G
-    "codeparrot/github-code": {"field": "code", "extra": []},  # 1.1 TB
-    "bigcode/the-stack-github-issues": {"field": "content", "extra": []},  # 66.6 G
+    # "bigcode/the-stack-march-sample-special-tokens-stripped": {
+    #     "field": "content",
+    #     "extra": [],
+    # },  # 1.1G
+    # "codeparrot/github-code": {"field": "code", "extra": []},  # 1.1 TB
+    # "bigcode/the-stack-github-issues": {"field": "content", "extra": []},  # 66.6 G
     "iohadrubin/wikitext-103-raw-v1": {"field": "text", "extra": []},  # 310M
     "oscar-corpus/mOSCAR": {
         "field": "text",
