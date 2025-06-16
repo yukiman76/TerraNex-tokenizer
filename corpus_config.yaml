@@ -1,0 +1,35 @@
+# Corpus building and tokenizer training configuration
+
+# Dataset sources
+sources:
+  - "hf::oscar-corpus/mOSCAR:swe_Latn"  # Swedish
+  - "hf::oscar-corpus/mOSCAR:nob_Latn"  # Norwegian Bokmål
+  - "hf::oscar-corpus/mOSCAR:dan_Latn"  # Danish
+  - "hf::oscar-corpus/mOSCAR:fin_Latn"  # Finnish
+  - "hf::oscar-corpus/mOSCAR:isl_Latn"  # Icelandic
+
+# Tokenizer settings
+tokenizer:
+  vocab_size: 128000
+  embedding_dim: 1024
+  min_frequency: 2
+  output_dir: "custom_tokenizer"
+  special_tokens:
+    pad_token: "<pad>"
+    eos_token: "</s>"
+    bos_token: "<s>"
+    unk_token: "<unk>"
+    mask_token: "<mask>"
+
+# Processing settings
+processing:
+  max_workers: 8
+  min_line_length: 32
+  streaming: true
+  max_pct: 1.0  # Use full dataset
+
+# Logging settings
+logging:
+  level: INFO
+  format: "%(asctime)s [%(levelname)s] %(message)s"
+  file: "corpus_build.log" 
