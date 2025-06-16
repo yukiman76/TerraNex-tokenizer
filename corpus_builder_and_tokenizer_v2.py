@@ -24,6 +24,13 @@ SPECIAL_TOKENS = {
     "mask_token": "<mask>"
 }
 
+DATASET_FIELD_MAPPING = {
+    "bigcode/the-stack-march-sample-special-tokens-stripped": "content",
+    "codeparrot/github-code": "content",
+    "bigcode/the-stack-github-issues": "content",
+    "iohadrubin/wikitext-103-raw-v1": "text"
+}
+
 def load_config(config_path):
     try:
         with open(config_path, 'r') as f:
@@ -65,8 +72,9 @@ def extract_hf_dataset(dataset_name, config=None, split="train", field="auto", m
         dataset = load_dataset(dataset_name, config, split=split, streaming=streaming)
         logger.info(f"Dataset loaded successfully. Streaming mode: {streaming}")
         
-        # Just use the content field
-        field = "content"
+        # Use the field mapping or default to 'content'
+        field = DATASET_FIELD_MAPPING.get(dataset_name, "content")
+        logger.info(f"Using field '{field}' for dataset {dataset_name}")
         
         total_lines = 0
         sampled_lines = 0
