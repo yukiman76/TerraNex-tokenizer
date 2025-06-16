@@ -130,19 +130,22 @@ def initialize_embedding_matrix(tokenizer, embedding_dim=1024):
 
 def batch_iterator(my_datasets, batch_size=10_000):
     i_ds = 1
-    for d in tqdm(my_datasets, desc="Processing"):
-        for i in tqdm(d.dataset, desc=f"Processing dataset {d.dataset_name} {i_ds} "):
-            k = d.dataset[d.affected_field]
-            if isinstance(k, list):
-                s = "".join(k)
-            else:
-                s = k
+    try:
+        for d in tqdm(my_datasets, desc="Processing"):
+            for i in tqdm(d.dataset, desc=f"Processing dataset {d.dataset_name} {i_ds} "):
+                k = d.dataset[d.affected_field]
+                if isinstance(k, list):
+                    s = "".join(k)
+                else:
+                    s = k
 
-            for p in range(0, len(s), batch_size):
-                # print(s[p: p+batch_size])
-                yield s[p : p + batch_size]
-        i_ds += 1
-
+                for p in range(0, len(s), batch_size):
+                    # print(s[p: p+batch_size])
+                    yield s[p : p + batch_size]
+            i_ds += 1
+    except:
+        import IPython
+        IPython.embed()
 
 def train_tokenizer(vocab_size, output_dir, max_workers):
     try:
