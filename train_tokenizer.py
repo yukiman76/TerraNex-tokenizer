@@ -23,7 +23,6 @@ class DSLoader:
     dataset: Dataset = None
     affected_field: str = None
     dataset_name: str = None
-    # extras: list = None
 
 
 SPECIAL_TOKENS = {
