@@ -1,4 +1,5 @@
 import os
+import time  # Sonny ---> Added for time tracking
 
 os.environ["HF_DATASETS_CACHE"] = "./datasets"
 import sys
@@ -113,9 +114,24 @@ def update_progress(dataset_name, lang=None, processed_size=0, total_size=0):
         return processed_size
 
 
+def update_dataset_timing(dataset_id, dataset_start, start_time, processed_size, total_size, dataset_times):
+    # Sonny ---> Calculate and store dataset loading time
+    dataset_time = time.time() - dataset_start
+    dataset_times[dataset_id] = dataset_time
+    elapsed_time = time.time() - start_time
+    progress = (processed_size / total_size) * 100
+    if progress > 0:
+        estimated_total = elapsed_time / (progress / 100)
+        remaining = estimated_total - elapsed_time
+        logger.info(f"Dataset loaded in {dataset_time:.1f}s | Est. remaining: {remaining/60:.1f}min")
+    return dataset_time
+
+
 def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=False, local_data_dir=None):
     dataset_count = 0
     total_size = 0
+    start_time = time.time()  # Sonny ---> Track overall start time
+    dataset_times = {}  # Sonny ---> Track individual dataset times
     
     # First, estimate total size
     logger.info("Estimating dataset sizes...")
@@ -140,12 +156,14 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
     
     logger.info(f"Total estimated dataset size: {total_size:.2f} GB")
     
-    # Sonny --- adding progress tracking
+    # Sonny ---> adding progress tracking
     processed_size = 0
     for dataset_name in data_sets:
         if len(data_sets[dataset_name]["extra"]) > 0:
             for lang in data_sets[dataset_name]["extra"]:
-                logger.info(f"Processing {dataset_name}.{lang}")
+                dataset_id = f"{dataset_name}.{lang}"
+                dataset_start = time.time()  # Sonny ---> Track dataset start time
+                logger.info(f"Processing {dataset_id}")
                 d = DSLoader()
                 try:
                     d.dataset = load_dataset(
@@ -159,7 +177,7 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                     )
                     
                     d.affected_field = data_sets[dataset_name]["field"]
-                    d.dataset_name = f"{dataset_name}.{lang}"
+                    d.dataset_name = dataset_id
 
                     if sample:
                         shuffled_dataset = d.dataset.shuffle(seed=42)
@@ -168,16 +186,20 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
 
                     dataset_count += 1
                     processed_size = update_progress(dataset_name, lang, processed_size, total_size)
+                    update_dataset_timing(dataset_id, dataset_start, start_time, processed_size, total_size, dataset_times)
                     yield d
                     
                 except Exception as e:
                     if offline_mode:
-                        logger.warning(f"Skipping {dataset_name}.{lang} - not available offline: {e}")
+                        logger.warning(f"Skipping {dataset_id} - not available offline: {e}")
                         continue
                     else:
-                        logger.error(f"Failed to load {dataset_name}.{lang}: {e}")
+                        logger.error(f"Failed to load {dataset_id}: {e}")
                         continue
         else:
+            dataset_id = dataset_name
+            dataset_start = time.time()  # Sonny ---> Track dataset start time
+            logger.info(f"Processing {dataset_id}")
             d = DSLoader()
             try:
                 d.dataset = load_dataset(
@@ -190,7 +212,7 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                 )
                 
                 d.affected_field = data_sets[dataset_name]["field"]
-                d.dataset_name = dataset_name
+                d.dataset_name = dataset_id
 
                 if sample:
                     shuffled_dataset = d.dataset.shuffle(seed=42)
@@ -199,14 +221,15 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
 
                 dataset_count += 1
                 processed_size = update_progress(dataset_name, processed_size=processed_size, total_size=total_size)
+                update_dataset_timing(dataset_id, dataset_start, start_time, processed_size, total_size, dataset_times)
                 yield d
                 
             except Exception as e:
                 if offline_mode:
-                    logger.warning(f"Skipping {dataset_name} - not available offline: {e}")
+                    logger.warning(f"Skipping {dataset_id} - not available offline: {e}")
                     continue
                 else:
-                    logger.error(f"Failed to load {dataset_name}: {e}")
+                    logger.error(f"Failed to load {dataset_id}: {e}")
                     continue
     
     if dataset_count == 0:
@@ -214,8 +237,13 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
         logger.error("Running with --download-only first")
         sys.exit(1)
     
+    # Sonny ---> Print final statistics
+    total_time = time.time() - start_time
+    avg_load_time = sum(dataset_times.values()) / len(dataset_times) if dataset_times else 0
     logger.info(f"Successfully loaded {dataset_count} datasets for training")
     logger.info(f"Total processed size: {processed_size:.2f} GB")
+    logger.info(f"Total time: {total_time/60:.1f} minutes")
+    logger.info(f"Average dataset load time: {avg_load_time:.1f} seconds")
 
 def initialize_embedding_matrix(tokenizer, embedding_dim=1024):
     vocab_size = tokenizer.get_vocab_size()
