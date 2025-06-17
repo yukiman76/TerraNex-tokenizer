@@ -56,11 +56,12 @@ data_sets = {
             "nld_Latn",
             "nno_Latn",
             "nob_Latn",
+            "pol_Latn"
         ],
     },  # 689G
     "statmt/cc100": {
         "field": "text",
-        "extra": ["sv", "en", "es", "de", "cy", "da", "fr", "it", "la", "nl", "no"],
+        "extra": ["sv", "en", "es", "de", "cy", "da", "fr", "it", "la", "nl", "no", "pl"],
     },  # 713G
 }
 
