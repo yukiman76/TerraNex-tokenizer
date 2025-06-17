@@ -9,7 +9,7 @@ import logging
 import itertools
 import numpy as np
 from tqdm import tqdm
-from datasets import Dataset, load_dataset
+from datasets import Dataset, load_dataset, load_dataset_builder
 from tokenizers import ByteLevelBPETokenizer
 
 # from transformers import PreTrainedTokenizerFast
@@ -101,8 +101,33 @@ def download_all_datasets():
 
 def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=False, local_data_dir=None):
     dataset_count = 0
+    total_size = 0
     
-    # First try to load HuggingFace datasets
+    # First, estimate total size
+    logger.info("Estimating dataset sizes...")
+    for dataset_name in data_sets:
+        if len(data_sets[dataset_name]["extra"]) > 0:
+            for lang in data_sets[dataset_name]["extra"]:
+                try:
+                    dataset_info = load_dataset_builder(dataset_name, name=lang)
+                    size_gb = dataset_info.info.size_in_bytes / (1024**3)
+                    total_size += size_gb
+                    logger.info(f"Estimated size of {dataset_name}.{lang}: {size_gb:.2f} GB")
+                except Exception as e:
+                    logger.warning(f"Could not estimate size for {dataset_name}.{lang}: {e}")
+        else:
+            try:
+                dataset_info = load_dataset_builder(dataset_name)
+                size_gb = dataset_info.info.size_in_bytes / (1024**3)
+                total_size += size_gb
+                logger.info(f"Estimated size of {dataset_name}: {size_gb:.2f} GB")
+            except Exception as e:
+                logger.warning(f"Could not estimate size for {dataset_name}: {e}")
+    
+    logger.info(f"Total estimated dataset size: {total_size:.2f} GB")
+    
+    # Sonny --- adding progress tracking
+    processed_size = 0
     for dataset_name in data_sets:
         if len(data_sets[dataset_name]["extra"]) > 0:
             for lang in data_sets[dataset_name]["extra"]:
@@ -114,9 +139,8 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                         name=lang,
                         split="train",
                         streaming=streaming,
-                        num_proc=max_workers if not streaming else None,  # Use multiprocessing for non-streaming
+                        num_proc=max_workers if not streaming else None,
                         cache_dir="./datasets",
-                        # Force offline mode if specified
                         download_mode="reuse_cache_if_exists" if offline_mode else None,
                     )
                     
@@ -129,6 +153,16 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                         d.dataset = Dataset.from_list(sampled_list)
 
                     dataset_count += 1
+                    # Sonny --- Update progress
+                    try:
+                        dataset_info = load_dataset_builder(dataset_name, name=lang)
+                        size_gb = dataset_info.info.size_in_bytes / (1024**3)
+                        processed_size += size_gb
+                        progress = (processed_size / total_size) * 100
+                        logger.info(f"Progress: {progress:.1f}% ({processed_size:.2f}/{total_size:.2f} GB)")
+                    except Exception as e:
+                        logger.warning(f"Could not update progress for {dataset_name}.{lang}: {e}")
+                    
                     yield d
                     
                 except Exception as e:
@@ -145,7 +179,7 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                     dataset_name,
                     split="train",
                     streaming=streaming,
-                    num_proc=max_workers if not streaming else None,  # Use multiprocessing for non-streaming
+                    num_proc=max_workers if not streaming else None,
                     cache_dir="./datasets",
                     download_mode="reuse_cache_if_exists" if offline_mode else None,
                 )
@@ -159,6 +193,16 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                     d.dataset = Dataset.from_list(sampled_list)
 
                 dataset_count += 1
+                # Update progress
+                try:
+                    dataset_info = load_dataset_builder(dataset_name)
+                    size_gb = dataset_info.info.size_in_bytes / (1024**3)
+                    processed_size += size_gb
+                    progress = (processed_size / total_size) * 100
+                    logger.info(f"Progress: {progress:.1f}% ({processed_size:.2f}/{total_size:.2f} GB)")
+                except Exception as e:
+                    logger.warning(f"Could not update progress for {dataset_name}: {e}")
+                
                 yield d
                 
             except Exception as e:
@@ -175,7 +219,7 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
         sys.exit(1)
     
     logger.info(f"Successfully loaded {dataset_count} datasets for training")
-
+    logger.info(f"Total processed size: {processed_size:.2f} GB")
 
 def initialize_embedding_matrix(tokenizer, embedding_dim=1024):
     vocab_size = tokenizer.get_vocab_size()
