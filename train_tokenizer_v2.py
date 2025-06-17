@@ -114,7 +114,7 @@ def update_progress(dataset_name, lang=None, processed_size=0, total_size=0):
         return processed_size
 
 
-def update_dataset_timing(dataset_id, dataset_start, start_time, processed_size, total_size, dataset_times):
+def update_dataset_timing(dataset_id, dataset_start, start_time, processed_size, total_size, dataset_times, lang=None):
     # Sonny ---> Calculate and store dataset loading time
     dataset_time = time.time() - dataset_start
     dataset_times[dataset_id] = dataset_time
@@ -186,7 +186,7 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
 
                     dataset_count += 1
                     processed_size = update_progress(dataset_name, lang, processed_size, total_size)
-                    update_dataset_timing(dataset_id, dataset_start, start_time, processed_size, total_size, dataset_times)
+                    update_dataset_timing(dataset_id, dataset_start, start_time, processed_size, total_size, dataset_times, lang)
                     yield d
                     
                 except Exception as e:
