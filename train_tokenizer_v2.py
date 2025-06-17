@@ -99,6 +99,20 @@ def download_all_datasets():
     logger.info("Dataset download process completed!")
 
 
+def update_progress(dataset_name, lang=None, processed_size=0, total_size=0):
+    try:
+        dataset_info = load_dataset_builder(dataset_name, name=lang)
+        size_gb = dataset_info.info.size_in_bytes / (1024**3)
+        processed_size += size_gb
+        progress = (processed_size / total_size) * 100
+        dataset_id = f"{dataset_name}.{lang}" if lang else dataset_name
+        logger.info(f"Progress for {dataset_id}: {progress:.1f}% ({processed_size:.2f}/{total_size:.2f} GB)")
+        return processed_size
+    except Exception as e:
+        logger.warning(f"Could not update progress for {dataset_name}{f'.{lang}' if lang else ''}: {e}")
+        return processed_size
+
+
 def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=False, local_data_dir=None):
     dataset_count = 0
     total_size = 0
@@ -153,16 +167,7 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                         d.dataset = Dataset.from_list(sampled_list)
 
                     dataset_count += 1
-                    # Sonny --- Update progress
-                    try:
-                        dataset_info = load_dataset_builder(dataset_name, name=lang)
-                        size_gb = dataset_info.info.size_in_bytes / (1024**3)
-                        processed_size += size_gb
-                        progress = (processed_size / total_size) * 100
-                        logger.info(f"Progress: {progress:.1f}% ({processed_size:.2f}/{total_size:.2f} GB)")
-                    except Exception as e:
-                        logger.warning(f"Could not update progress for {dataset_name}.{lang}: {e}")
-                    
+                    processed_size = update_progress(dataset_name, lang, processed_size, total_size)
                     yield d
                     
                 except Exception as e:
@@ -193,16 +198,7 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                     d.dataset = Dataset.from_list(sampled_list)
 
                 dataset_count += 1
-                # Update progress
-                try:
-                    dataset_info = load_dataset_builder(dataset_name)
-                    size_gb = dataset_info.info.size_in_bytes / (1024**3)
-                    processed_size += size_gb
-                    progress = (processed_size / total_size) * 100
-                    logger.info(f"Progress: {progress:.1f}% ({processed_size:.2f}/{total_size:.2f} GB)")
-                except Exception as e:
-                    logger.warning(f"Could not update progress for {dataset_name}: {e}")
-                
+                processed_size = update_progress(dataset_name, processed_size=processed_size, total_size=total_size)
                 yield d
                 
             except Exception as e:
