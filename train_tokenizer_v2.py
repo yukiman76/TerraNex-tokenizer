@@ -85,6 +85,7 @@ def download_all_datasets():
                                 cache_dir="./datasets",
                             )
                             logger.info(f"✓ Downloaded {dataset_name}.{lang}")
+                            bDone = True
                         except Exception as e:
                             logger.warning(f"✗ Failed to download {dataset_name}.{lang}: {e}")
                             i_trys -= 1
@@ -99,6 +100,7 @@ def download_all_datasets():
                             cache_dir="./datasets",
                         )
                         logger.info(f"✓ Downloaded {dataset_name}")
+                        bDone = True
                     except Exception as e:
                         logger.warning(f"✗ Failed to download {dataset_name}: {e}")
                         i_trys -= 1
