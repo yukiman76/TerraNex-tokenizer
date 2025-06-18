@@ -70,33 +70,44 @@ def download_all_datasets():
     logger.info("Downloading all datasets for offline use...")
     
     for dataset_name in data_sets:
-        try:
-            if len(data_sets[dataset_name]["extra"]) > 0:
-                for lang in data_sets[dataset_name]["extra"]:
-                    logger.info(f"Downloading {dataset_name}.{lang}")
+        i_trys = 10
+        bDone = False
+        while not bDone:
+            try:
+                if len(data_sets[dataset_name]["extra"]) > 0:
+                    for lang in data_sets[dataset_name]["extra"]:
+                        logger.info(f"Downloading {dataset_name}.{lang}")
+                        try:
+                            load_dataset(
+                                dataset_name,
+                                name=lang,
+                                split="train",
+                                cache_dir="./datasets",
+                            )
+                            logger.info(f"✓ Downloaded {dataset_name}.{lang}")
+                        except Exception as e:
+                            logger.warning(f"✗ Failed to download {dataset_name}.{lang}: {e}")
+                            i_trys -= 1
+                            if i_trys < 0:
+                                bDone = True
+                else:
+                    logger.info(f"Downloading {dataset_name}")
                     try:
                         load_dataset(
                             dataset_name,
-                            name=lang,
                             split="train",
                             cache_dir="./datasets",
                         )
-                        logger.info(f"✓ Downloaded {dataset_name}.{lang}")
+                        logger.info(f"✓ Downloaded {dataset_name}")
                     except Exception as e:
-                        logger.warning(f"✗ Failed to download {dataset_name}.{lang}: {e}")
-            else:
-                logger.info(f"Downloading {dataset_name}")
-                try:
-                    load_dataset(
-                        dataset_name,
-                        split="train",
-                        cache_dir="./datasets",
-                    )
-                    logger.info(f"✓ Downloaded {dataset_name}")
-                except Exception as e:
-                    logger.warning(f"✗ Failed to download {dataset_name}: {e}")
-        except Exception as e:
-            logger.error(f"Critical error downloading {dataset_name}: {e}")
+                        logger.warning(f"✗ Failed to download {dataset_name}: {e}")
+                        i_trys -= 1
+                        if i_trys < 0:
+                            bDone = True
+
+            except Exception as e:
+                logger.error(f"Critical error downloading {dataset_name}: {e}")
+                bDone = True
     
     logger.info("Dataset download process completed!")
 
