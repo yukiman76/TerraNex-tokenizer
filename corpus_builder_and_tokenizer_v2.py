@@ -1,19 +1,20 @@
-import os
-import sys
+import json
 import logging
-import click
+import os
+import random
+import sys
 import tempfile
+import time
+
+import click
+import huggingface_hub
+import numpy as np
 import requests
 import torch
-import numpy as np
-from tqdm import tqdm
-from datasets import load_dataset, get_dataset_config_names, DownloadConfig
-from tokenizers import ByteLevelBPETokenizer
-import random
 import yaml
-import json
-import time
-import huggingface_hub
+from datasets import DownloadConfig, get_dataset_config_names, load_dataset
+from tokenizers import ByteLevelBPETokenizer
+from tqdm import tqdm
 
 # Move logging configuration to after click options
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ DATASET_FIELD_MAPPING = {
 
 def load_config(config_path):
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path) as f:
             config = yaml.safe_load(f)
         logger.info(f"Loaded configuration from {config_path}")
         return config
@@ -60,7 +61,7 @@ def fetch_file_from_url(url):
 
 def yield_lines_from_file(file_path):
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             for line in f:
                 line_text = line.strip()
                 if line_text:
@@ -70,49 +71,49 @@ def yield_lines_from_file(file_path):
 
 def extract_hf_dataset(dataset_name, config=None, split="train", field="auto", max_pct=1.0, streaming=True, min_line_length=32, max_samples=None):
     logger.info(f"Loading dataset {dataset_name} with config={config}, split={split}, field={field}, max_pct={max_pct}, max_samples={max_samples}")
-    
+
     max_attempts = 3
     attempt = 0
-    
+
     while attempt < max_attempts:
         try:
             dataset = load_dataset(
-                dataset_name, 
-                config, 
-                split=split, 
+                dataset_name,
+                config,
+                split=split,
                 streaming=streaming,
                 download_config=DownloadConfig(resume_download=True)
             )
             logger.info(f"Dataset loaded successfully. Streaming mode: {streaming}")
-            
+
             # Use the field mapping or default to 'content'
             field = DATASET_FIELD_MAPPING.get(dataset_name, "content")
             logger.info(f"Using field '{field}' for dataset {dataset_name}")
-            
+
             total_lines = 0
             sampled_lines = 0
             for entry in tqdm(dataset, desc=f"Processing {dataset_name}", total=None):
                 total_lines += 1
-                
+
                 # Skip this entry if we're sampling and random value is above max_pct
                 if random.random() > max_pct:
                     continue
-                
+
                 text = str(entry.get(field, "")).strip().replace("\n", " ")
-                
+
                 if len(text) >= min_line_length:
                     sampled_lines += 1
                     yield text
-                    
+
                     # Stop if we've reached max_samples
                     if max_samples is not None and sampled_lines >= max_samples:
                         logger.info(f"Reached max_samples ({max_samples}) for {dataset_name}")
                         break
-            
+
             logger.info(f"Finished processing {dataset_name}. Total lines: {total_lines:,}, Sampled lines: {sampled_lines:,}")
             break  # Success, exit the retry loop
-            
-        except requests.exceptions.ReadTimeout as e:
+
+        except requests.exceptions.ReadTimeout:
             attempt += 1
             if attempt < max_attempts:
                 wait_time = 5 * attempt  # Progressive backoff: 5s, 10s, 15s
@@ -165,7 +166,7 @@ def parse_hf_source(source):
 def train_tokenizer_streaming(sources, vocab_size, output_dir, embedding_dim, max_workers=4, max_samples=None):
     try:
         tokenizer = ByteLevelBPETokenizer()
-        
+
         def text_iterator():
             for source in sources:
                 if source.startswith("hf::"):
@@ -190,7 +191,7 @@ def train_tokenizer_streaming(sources, vocab_size, output_dir, embedding_dim, ma
             min_frequency=2,
             special_tokens=list(SPECIAL_TOKENS.values())
         )
-        
+
         os.makedirs(output_dir, exist_ok=True)
         tokenizer.save_model(output_dir)
         logger.info(f"Tokenizer trained and saved to {output_dir}")
@@ -206,7 +207,7 @@ def validate_tokenizer(tokenizer_dir):
             os.path.join(tokenizer_dir, "merges.txt")
         )
         specials = dict(SPECIAL_TOKENS)
-        for name, token in specials.items():
+        for _, token in specials.items():
             if token not in tokenizer.get_vocab():
                 tokenizer.add_special_tokens([token])
         tokenizer.save_model(tokenizer_dir)
@@ -242,7 +243,7 @@ def save_tokenizer_config(tokenizer_dir, vocab_size, embedding_dim, special_toke
         "unk_token": special_tokens["unk_token"],
         "mask_token": special_tokens["mask_token"]
     }
-    
+
     config_path = os.path.join(tokenizer_dir, "config.json")
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
@@ -275,33 +276,33 @@ def main(config, source, tokenizer_dir, vocab_size, min_line_length, embedding_d
         max_workers = max_workers or config_data.get('processing', {}).get('max_workers', 4)
         log_level = log_level or config_data.get('logging', {}).get('level', 'INFO')
         special_tokens = config_data.get('tokenizer', {}).get('special_tokens', SPECIAL_TOKENS)
-    
+
     # Set max_samples if in test mode
     max_samples = 100 if test_mode else None
-    
+
     # Configure logging
     logging.basicConfig(
         level=getattr(logging, log_level),
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[logging.StreamHandler(sys.stdout)]
     )
-    
+
     try:
         logger.info("Step 1: Train tokenizer with streaming")
         if test_mode:
             logger.info("Running in test mode with 100 samples per dataset")
         tokenizer = train_tokenizer_streaming(source, vocab_size, tokenizer_dir, embedding_dim, max_workers, max_samples)
-        
+
         logger.info("Step 2: Validate tokenizer")
         tokenizer = validate_tokenizer(tokenizer_dir)
-        
+
         logger.info("Step 3: Initialize embedding matrix")
         weights = initialize_embedding_matrix(tokenizer, embedding_dim)
         np.save(os.path.join(tokenizer_dir, "embedding_matrix.npy"), weights.cpu().numpy())
-        
+
         logger.info("Step 4: Save tokenizer config")
         save_tokenizer_config(tokenizer_dir, vocab_size, embedding_dim, special_tokens)
-        
+
         logger.info("All steps completed successfully.")
     except KeyboardInterrupt:
         logger.warning("Process interrupted by user. Exiting gracefully.")

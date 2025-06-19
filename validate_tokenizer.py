@@ -1,36 +1,37 @@
-import os
+import csv
 import json
+import logging
+import logging.handlers
+import os
+import shutil
 import signal
 import sys
-import logging
-import click
-import yaml
-from datetime import datetime
+import tempfile
+import threading
+import time
+import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional
+
+import click
+import matplotlib.pyplot as plt
+import numpy as np
+import psutil
+import requests
+import seaborn as sns
+import yaml
+from jinja2 import Template
+from PIL import Image
+from requests.exceptions import RequestException
+from scipy import stats
 from tokenizers import Tokenizer
+from tokenizers.decoders import ByteLevel as ByteLevelDecoder
 from tokenizers.models import BPE
 from tokenizers.pre_tokenizers import ByteLevel
-from tokenizers.decoders import ByteLevel as ByteLevelDecoder
-import numpy as np
 from tqdm import tqdm
-import matplotlib.pyplot as plt
-import seaborn as sns
-from scipy import stats
-from pathlib import Path
-from jinja2 import Template
-import webbrowser
-import requests
-from requests.exceptions import RequestException
-from contextlib import contextmanager
-import tempfile
-import shutil
-import time
-import psutil
-import csv
-from typing import Dict, List, Optional, Any, Tuple
-import logging.handlers
-from PIL import Image
-import threading
 
 # Dataset language code mappings
 dataset_lang_codes = {
@@ -52,14 +53,14 @@ class ResourceLimitExceededError(Exception):
     """Exception raised when resource limits are exceeded"""
     pass
 
-class GracefulExit(Exception):
+class GracefulExitError(Exception):
     """Exception raised when a graceful shutdown is requested"""
     pass
 
 def signal_handler(signum, frame):
     """Handle termination signals by initiating a graceful shutdown"""
     logging.info(f"Received signal {signum}. Initiating graceful shutdown...")
-    raise GracefulExit("Shutdown requested")
+    raise GracefulExitError("Shutdown requested")
 
 # Register signal handlers
 signal.signal(signal.SIGINT, signal_handler)
@@ -67,13 +68,13 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 class TokenizerThreadSafeWrapper:
     """Thread-safe wrapper for the tokenizer."""
-    
+
     def __init__(self, tokenizer_path: str):
         """Initialize the tokenizer wrapper."""
         self.tokenizer_path = tokenizer_path
         self._tokenizer = None
         self._lock = threading.Lock()
-    
+
     def get_tokenizer(self) -> Tokenizer:
         """Get the tokenizer instance, creating it if necessary."""
         if self._tokenizer is None:
@@ -83,26 +84,26 @@ class TokenizerThreadSafeWrapper:
                     vocab_path = os.path.join(self.tokenizer_path, "vocab.json")
                     if not os.path.exists(vocab_path):
                         raise TokenizerValidationError(f"Vocabulary file not found at {vocab_path}")
-                    
+
                     # Create a BPE tokenizer with the vocabulary
                     self._tokenizer = Tokenizer(BPE())
                     self._tokenizer.pre_tokenizer = ByteLevel()
                     self._tokenizer.decoder = ByteLevelDecoder()
-                    
+
                     # Load the vocabulary
-                    with open(vocab_path, 'r', encoding='utf-8') as f:
+                    with open(vocab_path, encoding='utf-8') as f:
                         vocab = json.load(f)
                     self._tokenizer.add_tokens(list(vocab.keys()))
-        
+
         return self._tokenizer
-    
-    def analyze_text(self, text: str) -> Optional[Dict[str, Any]]:
+
+    def analyze_text(self, text: str) -> Optional[dict[str, Any]]:
         """Analyze text using the tokenizer."""
         try:
             tokenizer = self.get_tokenizer()
             encoding = tokenizer.encode(text)
             tokens = encoding.tokens
-            
+
             # Calculate character coverage
             unique_chars = set(text)
             vocab_chars = set(''.join(tokenizer.get_vocab().keys()))
@@ -145,62 +146,62 @@ def temporary_directory():
 
 class ResourceMonitor:
     """Monitor system resources and enforce limits"""
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         self.config = config
         self.process = psutil.Process()
         self._initialize_cpu_measurement()
         self.warning_threshold = 0.9  # 90% of the limit
-    
+
     def _initialize_cpu_measurement(self):
         """Initialize CPU measurement by getting an initial reading"""
         self.process.cpu_percent()
         time.sleep(0.1)  # Wait for a short interval
         self.process.cpu_percent()  # Get the first real measurement
-    
+
     def check_limits(self) -> None:
         """Check if current resource usage exceeds limits"""
         try:
             memory_info = self.process.memory_info()
             memory_mb = memory_info.rss / 1024 / 1024
             cpu_percent = self.process.cpu_percent()
-            
+
             # Get CPU limit from config, default to 100 if not specified
             cpu_limit = self.config['resource_limits'].get('max_cpu_percent', 100)
-            
+
             if memory_mb > self.config['resource_limits']['max_memory_mb']:
                 raise ResourceLimitExceededError(
                     f"Memory usage ({memory_mb:.1f}MB) exceeds limit "
                     f"({self.config['resource_limits']['max_memory_mb']}MB)"
                 )
-            
+
             # Only warn if CPU usage is above warning threshold
             if cpu_percent > cpu_limit * self.warning_threshold:
                 logging.warning(
                     f"High CPU usage detected ({cpu_percent:.1f}% of {cpu_limit}% limit). "
                     "Consider reducing max_workers if this persists."
                 )
-            
+
             # Only raise error if CPU usage exceeds the limit
             if cpu_percent > cpu_limit:
                 raise ResourceLimitExceededError(
                     f"CPU usage ({cpu_percent:.1f}%) exceeds limit ({cpu_limit}%)"
                 )
-                
+
         except Exception as e:
             logging.warning(f"Failed to check resource limits: {e}")
 
-def load_config(config_path: str) -> Dict[str, Any]:
+def load_config(config_path: str) -> dict[str, Any]:
     """Load and validate configuration from YAML file with enhanced error handling"""
     if not os.path.exists(config_path):
         raise TokenizerValidationError(f"Configuration file not found: {config_path}")
-    
+
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path) as f:
             config = yaml.safe_load(f)
-        
+
         if not isinstance(config, dict):
             raise TokenizerValidationError("Configuration file must contain a valid YAML dictionary")
-        
+
         # Validate required configuration fields
         required_fields = {
             'tokenizer_path': str,
@@ -215,7 +216,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
             'anomaly_detection': dict,
             'resource_limits': dict
         }
-        
+
         # Check required fields
         missing_fields = []
         type_errors = []
@@ -224,25 +225,25 @@ def load_config(config_path: str) -> Dict[str, Any]:
                 missing_fields.append(field)
             elif not isinstance(config[field], field_type):
                 type_errors.append(f"{field} (expected {field_type.__name__}, got {type(config[field]).__name__})")
-        
+
         if missing_fields:
             raise TokenizerValidationError(f"Missing required fields: {', '.join(missing_fields)}")
         if type_errors:
             raise TokenizerValidationError(f"Type errors in fields: {', '.join(type_errors)}")
-        
+
         # Set default values for optional fields
         config.setdefault('temp_dir', 'temp')
         config.setdefault('retry_attempts', 3)
         config.setdefault('retry_delay', 5)
         config.setdefault('fallback_datasets', [])
         config.setdefault('output_formats', ['json', 'html'])
-        
+
         # Set default resource limits if not specified
         if 'resource_limits' in config:
             config['resource_limits'].setdefault('max_memory_mb', 4096)  # 4GB default
             config['resource_limits'].setdefault('max_cpu_percent', 100)  # 100% default
             config['resource_limits'].setdefault('cleanup_on_exit', True)
-        
+
         # Validate nested configurations
         if 'logging' in config:
             logging_config = config['logging']
@@ -250,14 +251,14 @@ def load_config(config_path: str) -> Dict[str, Any]:
             logging_config.setdefault('backup_count', 5)
             logging_config.setdefault('console_level', 'INFO')
             logging_config.setdefault('file_level', 'DEBUG')
-        
+
         return config
     except yaml.YAMLError as e:
-        raise TokenizerValidationError(f"Invalid YAML format in configuration file: {e}")
+        raise TokenizerValidationError(f"Invalid YAML format in configuration file: {e}") from e
     except Exception as e:
-        raise TokenizerValidationError(f"Failed to load config file: {e}")
+        raise TokenizerValidationError(f"Failed to load config file: {e}") from e
 
-def setup_logging(config: Dict[str, Any]) -> None:
+def setup_logging(config: dict[str, Any]) -> None:
     """Configure logging based on config"""
     try:
         log_dir = Path(config['log_dir'])
@@ -267,11 +268,11 @@ def setup_logging(config: Dict[str, Any]) -> None:
         # Configure root logger
         root_logger = logging.getLogger()
         root_logger.setLevel(logging.DEBUG)  # Set to lowest level to capture all logs
-        
+
         # Remove existing handlers
         for handler in root_logger.handlers[:]:
             root_logger.removeHandler(handler)
-        
+
         # File handler with rotation
         file_handler = logging.handlers.RotatingFileHandler(
             log_file,
@@ -281,21 +282,21 @@ def setup_logging(config: Dict[str, Any]) -> None:
         file_handler.setLevel(getattr(logging, config['logging']['file_level']))
         file_handler.setFormatter(logging.Formatter(config['logging']['format']))
         root_logger.addHandler(file_handler)
-        
+
         # Console handler
         console_handler = logging.StreamHandler()
         console_handler.setLevel(getattr(logging, config['logging']['console_level']))
         console_handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
         root_logger.addHandler(console_handler)
-        
+
         # Log initial configuration
         logging.debug("Logging configured with the following settings:")
         logging.debug(f"File level: {config['logging']['file_level']}")
         logging.debug(f"Console level: {config['logging']['console_level']}")
         logging.debug(f"Log file: {log_file}")
-        
+
     except Exception as e:
-        raise TokenizerValidationError(f"Failed to setup logging: {e}")
+        raise TokenizerValidationError(f"Failed to setup logging: {e}") from e
 
 def validate_tokenizer_path(tokenizer_path: str) -> bool:
     """Validate tokenizer path or model name"""
@@ -303,7 +304,7 @@ def validate_tokenizer_path(tokenizer_path: str) -> bool:
         # Check if it's a local path
         if os.path.exists(tokenizer_path):
             return True
-        
+
         # Check if it's a valid model name on Hugging Face Hub
         try:
             response = requests.head(f"https://huggingface.co/{tokenizer_path}")
@@ -311,17 +312,17 @@ def validate_tokenizer_path(tokenizer_path: str) -> bool:
                 return True
         except RequestException:
             pass
-        
+
         return False
     except Exception as e:
         logging.error(f"Error validating tokenizer path: {e}")
         return False
 
-def load_test_samples(language_code: str, config: Dict[str, Any]) -> List[str]:
+def load_test_samples(language_code: str, config: dict[str, Any]) -> list[str]:
     """Load test samples for a specific language."""
     try:
         samples = []
-        with open('test_samples.txt', 'r', encoding='utf-8') as f:
+        with open('test_samples.txt', encoding='utf-8') as f:
             for line in f:
                 if line.startswith(f"{language_code}:"):
                     # Remove the language code prefix and get the text
@@ -339,11 +340,11 @@ def verify_image_file(file_path: Path) -> bool:
         if not file_path.exists():
             logging.error(f"File does not exist: {file_path}")
             return False
-            
+
         if file_path.stat().st_size == 0:
             logging.error(f"File is empty: {file_path}")
             return False
-            
+
         # Open and verify the image in a single operation
         try:
             with Image.open(file_path) as img:
@@ -364,7 +365,7 @@ def verify_image_file(file_path: Path) -> bool:
         except Exception as e:
             logging.error(f"Failed to verify image {file_path}: {e}")
             return False
-            
+
     except Exception as e:
         logging.error(f"Error processing image file {file_path}: {e}")
         return False
@@ -377,7 +378,7 @@ def verify_visualization_files(output_dir: Path) -> None:
         'consistency_scatter.png',
         'char_coverage.png'
     ]
-    
+
     missing_files = []
     for filename in required_files:
         file_path = output_dir / filename
@@ -387,20 +388,20 @@ def verify_visualization_files(output_dir: Path) -> None:
             missing_files.append(filename)
         elif not verify_image_file(file_path):
             missing_files.append(filename)
-    
+
     if missing_files:
         raise TokenizerValidationError(f"Missing files: {', '.join(missing_files)}")
 
-def save_results(results: Dict[str, Any], config: Dict[str, Any], output_dir: Path) -> None:
+def save_results(results: dict[str, Any], config: dict[str, Any], output_dir: Path) -> None:
     """Save results in multiple formats"""
     try:
         output_dir.mkdir(exist_ok=True, parents=True)
-        
+
         for format in config['output_formats']:
             if format == 'json':
                 with open(output_dir / "tokenizer_validation_results.json", "w", encoding="utf-8") as f:
                     json.dump(results, f, ensure_ascii=False, indent=2)
-            
+
             elif format == 'csv':
                 with open(output_dir / "tokenizer_validation_results.csv", "w", newline='', encoding="utf-8") as f:
                     writer = csv.DictWriter(f, fieldnames=[
@@ -427,7 +428,7 @@ def save_results(results: Dict[str, Any], config: Dict[str, Any], output_dir: Pa
                                 'avg_tokens_per_char': 0,
                                 'sample_count': 0
                             })
-            
+
             elif format == 'md':
                 with open(output_dir / "tokenizer_validation_results.md", "w", encoding="utf-8") as f:
                     f.write("# Tokenizer Validation Results\n\n")
@@ -444,25 +445,25 @@ def save_results(results: Dict[str, Any], config: Dict[str, Any], output_dir: Pa
                                    f"{metrics.get('sample_count', 0)} |\n")
                         else:
                             f.write(f"| {lang} | {result['status']} | 0 | 0 | 0 | 0 |\n")
-    
-    except Exception as e:
-        raise TokenizerValidationError(f"Error saving results: {e}")
 
-def analyze_tokenization(tokenizer: Tokenizer, text: str) -> Optional[Dict[str, Any]]:
+    except Exception as e:
+        raise TokenizerValidationError(f"Error saving results: {e}") from e
+
+def analyze_tokenization(tokenizer: Tokenizer, text: str) -> Optional[dict[str, Any]]:
     """Enhanced tokenization analysis with additional metrics"""
     try:
         encoding = tokenizer.encode(text)
         tokens = encoding.tokens
         unique_tokens = set(tokens)
-        
+
         # Calculate token lengths
         token_lengths = [len(token) for token in tokens]
-        
+
         # Calculate character coverage
         unique_chars = set(text)
         vocab_chars = set(''.join(tokenizer.get_vocab().keys()))
         char_coverage = len(unique_chars.intersection(vocab_chars)) / len(unique_chars) if unique_chars else 0
-        
+
         return {
             "num_tokens": len(tokens),
             "num_chars": len(text),
@@ -478,7 +479,7 @@ def analyze_tokenization(tokenizer: Tokenizer, text: str) -> Optional[Dict[str, 
         logging.error(f"Error analyzing tokenization: {e}", exc_info=True)
         return None
 
-def detect_anomalies(ratios: List[float], z_threshold: float = 2.0) -> Tuple[np.ndarray, np.ndarray]:
+def detect_anomalies(ratios: list[float], z_threshold: float = 2.0) -> tuple[np.ndarray, np.ndarray]:
     """Detect anomalous tokenization ratios using Z-score"""
     try:
         z_scores = np.abs(stats.zscore(ratios))
@@ -488,7 +489,7 @@ def detect_anomalies(ratios: List[float], z_threshold: float = 2.0) -> Tuple[np.
         logging.error(f"Error in anomaly detection: {e}", exc_info=True)
         return np.zeros_like(ratios, dtype=bool), np.zeros_like(ratios)
 
-def validate_language(language_code: str, tokenizer_wrapper: TokenizerThreadSafeWrapper, config: Dict[str, Any]) -> Dict[str, Any]:
+def validate_language(language_code: str, tokenizer_wrapper: TokenizerThreadSafeWrapper, config: dict[str, Any]) -> dict[str, Any]:
     """Validate tokenizer performance for a specific language."""
     try:
         # Load test samples
@@ -499,25 +500,25 @@ def validate_language(language_code: str, tokenizer_wrapper: TokenizerThreadSafe
                 'status': 'error',
                 'error': 'No test samples available'
             }
-        
+
         # Process each sample
         results = []
         ratios = []
         char_coverages = []
         token_lengths = []
         unique_tokens = set()
-        
+
         for sample in test_samples:
             # Skip empty samples or non-string samples
             if not sample or not isinstance(sample, str):
                 logging.debug(f"Skipping invalid sample type: {type(sample)}")
                 continue
-                
+
             # Clean the sample
             sample = sample.strip()
             if not sample:
                 continue
-                
+
             # Get tokenization metrics
             metrics = tokenizer_wrapper.analyze_text(sample)
             if metrics:
@@ -528,14 +529,14 @@ def validate_language(language_code: str, tokenizer_wrapper: TokenizerThreadSafe
                 # Get the actual tokens from the tokenizer
                 tokens = tokenizer_wrapper.get_tokenizer().encode(sample).tokens
                 unique_tokens.update(tokens)
-        
+
         if not results:
             return {
                 'language': language_code,
                 'status': 'error',
                 'error': 'No valid results were generated'
             }
-        
+
         # Calculate aggregate metrics
         avg_tokens = sum(r['tokens'] for r in results) / len(results)
         avg_chars = sum(r['chars'] for r in results) / len(results)
@@ -544,11 +545,11 @@ def validate_language(language_code: str, tokenizer_wrapper: TokenizerThreadSafe
         avg_char_coverage = sum(char_coverages) / len(char_coverages) if char_coverages else 0
         avg_token_length = sum(token_lengths) / len(token_lengths) if token_lengths else 0
         std_token_length = np.std(token_lengths) if len(token_lengths) > 1 else 0
-        
+
         # Detect anomalies using tokenization ratio only
         anomalies, z_scores = detect_anomalies(ratios, config['z_threshold'])
         anomaly_count = int(np.sum(anomalies))
-        
+
         metrics = {
             'avg_tokens': avg_tokens,
             'avg_chars': avg_chars,
@@ -561,15 +562,15 @@ def validate_language(language_code: str, tokenizer_wrapper: TokenizerThreadSafe
             'unique_token_count': len(unique_tokens),
             'sample_count': len(results)
         }
-        
+
         logging.info(f"Language {language_code} metrics: {metrics}")
-        
+
         return {
             'language': language_code,
             'status': 'success',
             'metrics': metrics
         }
-        
+
     except Exception as e:
         logging.error(f"Error processing {language_code}: {str(e)}")
         return {
@@ -659,7 +660,7 @@ def visualize_metrics(results, config):
         scatter = plt.scatter(sample_counts, tokens_per_char, c=anomaly_counts,
                             cmap='coolwarm', alpha=0.7, s=100)
         for i, lang in enumerate(languages):
-            plt.annotate(lang, (sample_counts[i], tokens_per_char[i]), 
+            plt.annotate(lang, (sample_counts[i], tokens_per_char[i]),
                         fontsize=9, ha='right', va='bottom')
         plt.xlabel('Number of Samples', fontsize=12)
         plt.ylabel('Average Tokens per Character', fontsize=12)
@@ -702,10 +703,10 @@ def generate_html_report(results, config):
     try:
         output_dir = Path(config['output_dir'])
         output_dir.mkdir(exist_ok=True, parents=True)
-        
+
         # Verify visualization files exist
         verify_visualization_files(output_dir)
-        
+
         template = """
         <!DOCTYPE html>
         <html>
@@ -752,7 +753,7 @@ def generate_html_report(results, config):
                 </tr>
                 {% endfor %}
             </table>
-            
+
             <h2>Visualizations</h2>
             <img src="tokens_per_char.png" alt="Tokens per Character">
             <img src="metrics_heatmap.png" alt="Metrics Heatmap">
@@ -761,17 +762,17 @@ def generate_html_report(results, config):
         </body>
         </html>
         """
-        
+
         report_path = output_dir / "report.html"
         with open(report_path, "w", encoding="utf-8") as f:
             f.write(Template(template).render(results=results))
-        
+
         return report_path
     except Exception as e:
-        raise TokenizerValidationError(f"Error generating HTML report: {e}")
+        raise TokenizerValidationError(f"Error generating HTML report: {e}") from e
 
 @click.command()
-@click.option('--config', '-c', 
+@click.option('--config', '-c',
               default='config.yaml',
               help='Path to configuration file',
               type=click.Path(exists=True))
@@ -799,7 +800,7 @@ def main(config, sample_size, max_workers, languages, no_browser, output_format,
     executor = None
     try:
         config_data = load_config(config)
-        
+
         # Override config with command line arguments if provided
         if sample_size:
             config_data['sample_size'] = sample_size
@@ -812,10 +813,10 @@ def main(config, sample_size, max_workers, languages, no_browser, output_format,
         if log_level:
             config_data['logging']['console_level'] = log_level
             config_data['logging']['file_level'] = log_level
-        
+
         setup_logging(config_data)
         logging.info("Starting tokenizer validation")
-        
+
         resource_monitor = ResourceMonitor(config_data)
         resource_monitor.check_limits()
 
@@ -824,19 +825,19 @@ def main(config, sample_size, max_workers, languages, no_browser, output_format,
             raise TokenizerValidationError(
                 f"Invalid tokenizer path or model name: {tokenizer_path}"
             )
-        
+
         tokenizer_wrapper = TokenizerThreadSafeWrapper(tokenizer_path)
         logging.info("Successfully initialized tokenizer wrapper")
 
         validation_args = [(lang, tokenizer_wrapper, config_data) for lang in config_data['languages']]
-        
+
         results = {}
         executor = ThreadPoolExecutor(max_workers=config_data['max_workers'])
-        futures = {executor.submit(validate_language, *args): args[0] 
+        futures = {executor.submit(validate_language, *args): args[0]
                   for args in validation_args}
-        
+
         try:
-            for future in tqdm(as_completed(futures), 
+            for future in tqdm(as_completed(futures),
                              total=len(futures),
                              desc="Validating languages"):
                 lang = futures[future]
@@ -847,7 +848,7 @@ def main(config, sample_size, max_workers, languages, no_browser, output_format,
                     resource_monitor.check_limits()
                 except Exception as e:
                     logging.error(f"Error processing {lang}: {e}", exc_info=True)
-        except GracefulExit:
+        except GracefulExitError:
             logging.info("Graceful shutdown requested. Waiting for current tasks to complete...")
             # Cancel pending futures
             for future in futures:
@@ -861,20 +862,20 @@ def main(config, sample_size, max_workers, languages, no_browser, output_format,
                     except Exception:
                         pass
             raise
-        
+
         if not results:
             raise TokenizerValidationError("No valid results were generated")
-        
+
         # Generate visualizations and save results
         visualize_metrics(results, config_data)
         output_dir = Path(config_data['output_dir'])
         save_results(results, config_data, output_dir)
-        
+
         if 'html' in config_data['output_formats']:
             report_path = generate_html_report(results, config_data)
             if not no_browser:
                 webbrowser.open(f"file://{os.path.abspath(report_path)}")
-        
+
         # Print summary
         click.echo("\nTokenization Quality Summary:")
         click.echo("-" * 120)
@@ -894,11 +895,11 @@ def main(config, sample_size, max_workers, languages, no_browser, output_format,
             else:
                 status = "⚠️"
                 click.echo(f"{lang:<8} {'N/A':<8} {'N/A':<15} {'N/A':<10} {'N/A':<10} {'N/A':<15} {status:<10}")
-        
+
         logging.info(f"Results saved to {output_dir}")
         logging.info("Validation completed successfully")
-        
-    except GracefulExit as e:
+
+    except GracefulExitError as e:
         logging.info(f"Graceful shutdown initiated: {e}")
         if config_data and results:
             try:
