@@ -43,27 +43,27 @@ data_sets = {
     #     "extra": [],
     # },  # 1.1G
     # "codeparrot/github-code": {"field": "code", "extra": []},  # 1.1 TB
-    "bigcode/the-stack-github-issues": {"field": "content", "extra": []},  # 66.6 G
-    "iohadrubin/wikitext-103-raw-v1": {"field": "text", "extra": []},  # 310M
-    "oscar-corpus/mOSCAR": {
-        "field": "text",
-        "extra": [
-            "swe_Latn",
-            "eng_Latn",
-            "spa_Latn",
-            "deu_Latn",
-            "cym_Latn",
-            "dan_Latn",
-            "fra_Latn",
-            "fin_Latn",
-            "ita_Latn",
-            "nld_Latn",
-            "nno_Latn",
-            "nob_Latn",
-            "pol_Latn",
-        ],
-    },  # 689G
-    "mc4": {
+    # "bigcode/the-stack-github-issues": {"field": "content", "extra": []},  # 66.6 G
+    # "iohadrubin/wikitext-103-raw-v1": {"field": "text", "extra": []},  # 310M
+    # "oscar-corpus/mOSCAR": {
+    #     "field": "text",
+    #     "extra": [
+    #         "swe_Latn",
+    #         "eng_Latn",
+    #         "spa_Latn",
+    #         "deu_Latn",
+    #         "cym_Latn",
+    #         "dan_Latn",
+    #         "fra_Latn",
+    #         "fin_Latn",
+    #         "ita_Latn",
+    #         "nld_Latn",
+    #         "nno_Latn",
+    #         "nob_Latn",
+    #         "pol_Latn",
+    #     ],
+    # },  # 689G
+    "allenai/c4": {
         "field": "text",
         "extra": [
             "sv",
@@ -77,7 +77,7 @@ data_sets = {
             "no",
             "pl",
         ],  # Note: no Welsh or Latin
-    },  # ~300G for these languages
+    }, # this takes over mc4
     "togethercomputer/RedPajama-Data-1T": {
         "field": "text",
         "extra": [],
