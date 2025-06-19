@@ -2,19 +2,21 @@ import os
 import time  # Sonny ---> Added for time tracking
 
 os.environ["HF_DATASETS_CACHE"] = "./datasets"
-import sys
-import json
-import click
-import torch
-import logging
 import itertools
+import json
+import logging
+import sys
+
+import click
 import numpy as np
-from tqdm import tqdm
-from datasets import Dataset, load_dataset, load_dataset_builder
+import torch
 from tokenizers import ByteLevelBPETokenizer
+from tqdm import tqdm
 
 # from transformers import PreTrainedTokenizerFast
 from transformers import GPT2TokenizerFast
+
+from datasets import Dataset, load_dataset, load_dataset_builder
 
 # Move logging configuration to after click options
 logger = logging.getLogger(__name__)
@@ -68,11 +70,11 @@ data_sets = {
 
 def download_all_datasets():
     logger.info("Downloading all datasets for offline use...")
-    
+
     for dataset_name in data_sets:
         i_trys = 10
-        bDone = False
-        while not bDone:
+        is_done = False
+        while not is_done:
             try:
                 if len(data_sets[dataset_name]["extra"]) > 0:
                     for lang in data_sets[dataset_name]["extra"]:
@@ -85,12 +87,12 @@ def download_all_datasets():
                                 cache_dir="./datasets",
                             )
                             logger.info(f"✓ Downloaded {dataset_name}.{lang}")
-                            bDone = True
+                            is_done = True
                         except Exception as e:
                             logger.warning(f"✗ Failed to download {dataset_name}.{lang}: {e}")
                             i_trys -= 1
                             if i_trys < 0:
-                                bDone = True
+                                is_done = True
                 else:
                     logger.info(f"Downloading {dataset_name}")
                     try:
@@ -100,17 +102,17 @@ def download_all_datasets():
                             cache_dir="./datasets",
                         )
                         logger.info(f"✓ Downloaded {dataset_name}")
-                        bDone = True
+                        is_done = True
                     except Exception as e:
                         logger.warning(f"✗ Failed to download {dataset_name}: {e}")
                         i_trys -= 1
                         if i_trys < 0:
-                            bDone = True
+                            is_done = True
 
             except Exception as e:
                 logger.error(f"Critical error downloading {dataset_name}: {e}")
-                bDone = True
-    
+                is_done = True
+
     logger.info("Dataset download process completed!")
 
 
@@ -146,7 +148,7 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
     total_size = 0
     start_time = time.time()  # Sonny ---> Track overall start time
     dataset_times = {}  # Sonny ---> Track individual dataset times
-    
+
     # First, estimate total size
     logger.info("Estimating dataset sizes...")
     for dataset_name in data_sets:
@@ -167,9 +169,9 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                 logger.info(f"Estimated size of {dataset_name}: {size_gb:.2f} GB")
             except Exception as e:
                 logger.warning(f"Could not estimate size for {dataset_name}: {e}")
-    
+
     logger.info(f"Total estimated dataset size: {total_size:.2f} GB")
-    
+
     # Sonny ---> adding progress tracking
     processed_size = 0
     for dataset_name in data_sets:
@@ -189,7 +191,7 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                         cache_dir="./datasets",
                         download_mode="reuse_cache_if_exists" if offline_mode else None,
                     )
-                    
+
                     d.affected_field = data_sets[dataset_name]["field"]
                     d.dataset_name = dataset_id
 
@@ -202,7 +204,7 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                     processed_size = update_progress(dataset_name, lang, processed_size, total_size)
                     update_dataset_timing(dataset_id, dataset_start, start_time, processed_size, total_size, dataset_times, lang)
                     yield d
-                    
+
                 except Exception as e:
                     if offline_mode:
                         logger.warning(f"Skipping {dataset_id} - not available offline: {e}")
@@ -224,7 +226,7 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                     cache_dir="./datasets",
                     download_mode="reuse_cache_if_exists" if offline_mode else None,
                 )
-                
+
                 d.affected_field = data_sets[dataset_name]["field"]
                 d.dataset_name = dataset_id
 
@@ -237,7 +239,7 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                 processed_size = update_progress(dataset_name, processed_size=processed_size, total_size=total_size)
                 update_dataset_timing(dataset_id, dataset_start, start_time, processed_size, total_size, dataset_times)
                 yield d
-                
+
             except Exception as e:
                 if offline_mode:
                     logger.warning(f"Skipping {dataset_id} - not available offline: {e}")
@@ -245,12 +247,12 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                 else:
                     logger.error(f"Failed to load {dataset_id}: {e}")
                     continue
-    
+
     if dataset_count == 0:
         logger.error("No datasets available for training! Consider:")
         logger.error("Running with --download-only first")
         sys.exit(1)
-    
+
     # Sonny ---> Print final statistics
     total_time = time.time() - start_time
     avg_load_time = sum(dataset_times.values()) / len(dataset_times) if dataset_times else 0
@@ -303,7 +305,7 @@ def batch_iterator(my_datasets, batch_size=10_000):
             i_ds += 1
     except Exception as e:
         print(f"Error: {e}")
-        import IPython
+        import IPython  # <--------- Sonny: I left this here for you since you use it for debugging ;)
         IPython.embed()
 
 
@@ -311,16 +313,16 @@ def train_tokenizer(vocab_size, output_dir, max_workers, streaming=True, offline
     try:
         logger.info("Step 1: Build and deduplicate corpus from provided sources")
         my_datasets = load_all_datasets(
-            max_workers=max_workers, 
+            max_workers=max_workers,
             streaming=streaming,
-            sample=None, 
+            sample=None,
             offline_mode=offline_mode,
             local_data_dir=local_data_dir
         )
-        
+
         logger.info("Step 2: Train ByteLevelBPE tokenizer using datasets library multithreading")
         tokenizer = ByteLevelBPETokenizer()
-        
+
         # The datasets library handles multithreading internally when we iterate through the datasets
         tokenizer.train_from_iterator(
             batch_iterator(my_datasets),
@@ -328,7 +330,7 @@ def train_tokenizer(vocab_size, output_dir, max_workers, streaming=True, offline
             min_frequency=2,  # TODO: we might need to change this
             special_tokens=list(SPECIAL_TOKENS.values()),
         )
-        
+
         os.makedirs(output_dir, exist_ok=True)
         tokenizer.save_model(output_dir)
         logger.info(f"Tokenizer trained and saved to {output_dir}")
@@ -375,7 +377,7 @@ def save_tokenizer_config(tokenizer_dir, vocab_size, embedding_dim):
         "unk_token": SPECIAL_TOKENS["unk_token"],
         "mask_token": SPECIAL_TOKENS["mask_token"]
     }
-    
+
     config_path = os.path.join(tokenizer_dir, "config.json")
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
@@ -481,35 +483,35 @@ def main(
     try:
         logger.info("Step 1: Train tokenizer")
         tokenizer = train_tokenizer(
-            vocab_size, 
-            tokenizer_out_dir, 
-            max_workers, 
+            vocab_size,
+            tokenizer_out_dir,
+            max_workers,
             streaming=streaming,
             offline_mode=offline,
             local_data_dir=local_data_dir
         )
-        
+
         logger.info("Step 2: Validate tokenizer")
         validate_tokenizer(tokenizer_out_dir)
-        
+
         logger.info("Step 3: Initialize embedding matrix")
         weights = initialize_embedding_matrix(tokenizer, embedding_dim)
         np.save(
             os.path.join(tokenizer_out_dir, "embedding_matrix.npy"),
             weights.cpu().numpy(),
         )
-        
+
         logger.info("Step 4: Save tokenizer configuration")
         save_tokenizer_config(tokenizer_out_dir, vocab_size, embedding_dim)
-        
+
         logger.info("All steps completed successfully.")
         logger.info(f"Tokenizer saved to: {tokenizer_out_dir}")
         logger.info("Files created:")
         logger.info("  - vocab.json")
-        logger.info("  - merges.txt") 
+        logger.info("  - merges.txt")
         logger.info("  - config.json")
         logger.info("  - embedding_matrix.npy")
-        
+
     except KeyboardInterrupt:
         logger.warning("Process interrupted by user. Exiting gracefully.")
         sys.exit(0)
