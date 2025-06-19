@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 import click
 import psutil
+
 from datasets import Dataset, load_dataset
 
 logging.basicConfig(
@@ -421,9 +422,6 @@ def download_dataset_with_retry(
 
 
 def download_all_datasets(force: bool = False) -> None:
-    """
-    🚀 OPTIMIZED: Batch status updates and reduced I/O operations
-    """
     logger.info("Starting dataset download process...")
 
     if not validate_configuration():
