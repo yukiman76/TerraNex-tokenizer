@@ -1,16 +1,17 @@
+import logging
 import os
 import sys
-import logging
-import click
-from tqdm import tqdm
-from datasets import load_dataset
-from tokenizers import ByteLevelBPETokenizer
-from transformers import PreTrainedTokenizerFast
-import torch
-import numpy as np
-import requests
 import tempfile
 from collections import defaultdict
+
+import click
+import numpy as np
+import requests
+import torch
+from datasets import load_dataset
+from tokenizers import ByteLevelBPETokenizer
+from tqdm import tqdm
+from transformers import PreTrainedTokenizerFast
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,11 +47,11 @@ def fetch_file_from_url(url):
 
 def yield_lines_from_file(file_path):
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             for line in f:
-                l = line.strip()
-                if l:
-                    yield l
+                stripped_line = line.strip()
+                if stripped_line:
+                    yield stripped_line
     except Exception as e:
         logger.warning(f"Failed to read from file {file_path}: {e}")
 
@@ -179,10 +180,9 @@ def preview_tokenization(tokenizer, corpus, num_samples=5, preview_chars=80):
 def token_frequency_stats(tokenizer, corpus_file, stats_file):
     logger.info("Calculating token frequency statistics...")
     try:
-        vocab_size = getattr(tokenizer, "vocab_size", len(tokenizer))
         freq = defaultdict(int)
         total = 0
-        with open(corpus_file, "r", encoding="utf-8") as f:
+        with open(corpus_file, encoding="utf-8") as f:
             for line in tqdm(f, desc="Token freq"):
                 line = line.strip()
                 if not line:
@@ -252,7 +252,7 @@ def main(source, output_corpus, tokenizer_dir, vocab_size, min_line_length, embe
     except KeyboardInterrupt:
         logger.warning("Process interrupted by user. Exiting gracefully.")
         sys.exit(0)
-    except Exception as e:
+    except Exception:
         logger.error("Critical failure. Aborting.", exc_info=True)
         sys.exit(1)
 
