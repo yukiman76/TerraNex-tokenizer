@@ -41,7 +41,7 @@ class ColoredFormatter(logging.Formatter):
         return super().format(record)
 
 
-logger = logging.getLogger("📥")
+logger = logging.getLogger("🖥️")
 logger.setLevel(logging.INFO)
 
 for handler in logger.handlers[:]:
