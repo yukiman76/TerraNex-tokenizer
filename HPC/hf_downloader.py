@@ -17,12 +17,42 @@ import psutil
 
 from datasets import Dataset, load_dataset
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
+
+class ColoredFormatter(logging.Formatter):
+
+    COLORS = {
+        'DEBUG': '\033[36m',    # Cyan
+        'INFO': '\033[37m',     # White
+        'WARNING': '\033[33m',  # Yellow
+        'ERROR': '\033[31m',    # Red
+        'CRITICAL': '\033[35m', # Magenta
+        'RESET': '\033[0m'      # Reset
+    }
+
+    def format(self, record):
+        # Get the color for this log level
+        color = self.COLORS.get(record.levelname, self.COLORS['RESET'])
+        reset = self.COLORS['RESET']
+
+        # Apply color to the level name
+        record.levelname = f"{color}{record.levelname}{reset}"
+
+        # Format the message
+        return super().format(record)
+
+
 logger = logging.getLogger("📥")
+logger.setLevel(logging.INFO)
+
+for handler in logger.handlers[:]:
+    logger.removeHandler(handler)
+
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+colored_formatter = ColoredFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+console_handler.setFormatter(colored_formatter)
+logger.addHandler(console_handler)
+logger.propagate = False
 
 CACHE_DIR = os.getenv("HF_CACHE_DIR", "./datasets")
 MAX_RETRIES = max(1, min(50, int(os.getenv("HF_MAX_RETRIES", "10"))))
