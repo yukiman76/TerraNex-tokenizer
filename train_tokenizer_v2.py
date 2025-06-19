@@ -63,11 +63,6 @@ data_sets = {
             "pol_Latn",
         ],
     },  # 689G
-    # This is redundent for mOSCAR, and unreliable
-    # "statmt/cc100": {
-    #     "field": "text",
-    #     "extra": ["sv", "en", "es", "de", "cy", "da", "fr", "it", "la", "nl", "no", "pl"],
-    # },  # 713G
     "mc4": {
         "field": "text",
         "extra": [
@@ -85,16 +80,8 @@ data_sets = {
     },  # ~300G for these languages
     "togethercomputer/RedPajama-Data-1T": {
         "field": "text",
-        "extra": [
-            "common_crawl",
-            "c4",
-            "github",
-            "books",
-            "arxiv",
-            "wikipedia",
-            "stackexchange",
-        ],
-    },  # 1T tokens, high quality mix
+        "extra": [],
+    },  # 2.92G
     # Add conversational data
     "HuggingFaceH4/ultrachat_200k": {
         "field": "messages",
@@ -108,7 +95,18 @@ data_sets = {
     "arxiv": {"field": "text", "extra": []},  # Academic papers, legally redistributable
     "wikipedia": {
         "field": "text",
-        "extra": ["sv", "en", "es", "de", "da", "fr", "it", "nl", "no", "pl"],
+        "extra": [
+            "20220301.sv",
+            "20220301.en",
+            "20220301.es",
+            "20220301.de",
+            "20220301.da",
+            "20220301.fr",
+            "20220301.it",
+            "20220301.nl",
+            "20220301.no",
+            "20220301.pl",
+        ],
     },  # High-quality reference content
     # Legal news/journalism
     "cc_news": {"field": "text", "extra": []},  # News articles with proper licensing
@@ -117,7 +115,7 @@ data_sets = {
 
 def download_all_datasets():
     logger.info("Downloading all datasets for offline use...")
-
+    failed_list = []
     for dataset_name in data_sets:
         i_trys = 10
         is_done = False
@@ -146,6 +144,7 @@ def download_all_datasets():
                             )
                             i_trys -= 1
                             if i_trys < 0:
+                                failed_list.append(f"{dataset_name}.{lang}")
                                 is_done = True
                 else:
                     logger.info(f"Downloading {dataset_name}")
@@ -166,13 +165,18 @@ def download_all_datasets():
                         logger.warning(f"✗ Failed to download {dataset_name}: {e}")
                         i_trys -= 1
                         if i_trys < 0:
+                            failed_list.append(f"{dataset_name}")
                             is_done = True
 
             except Exception as e:
                 logger.error(f"Critical error downloading {dataset_name}: {e}")
                 is_done = True
 
+    import IPython
+    IPython.embed()
     logger.info("Dataset download process completed!")
+    logger.info("failed_list")
+    logger.info(failed_list)
 
 
 def update_progress(dataset_name, lang=None, processed_size=0, total_size=0):
