@@ -2,6 +2,7 @@ import os
 import time  # Sonny ---> Added for time tracking
 
 os.environ["HF_DATASETS_CACHE"] = "./datasets"
+os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "5000"  # 5 minutes
 import itertools
 import json
 import logging
@@ -10,12 +11,13 @@ import sys
 import click
 import numpy as np
 import torch
-from datasets import Dataset, load_dataset, load_dataset_builder
 from tokenizers import ByteLevelBPETokenizer
 from tqdm import tqdm
 
 # from transformers import PreTrainedTokenizerFast
 from transformers import GPT2TokenizerFast
+
+from datasets import Dataset, load_dataset, load_dataset_builder
 
 # Move logging configuration to after click options
 logger = logging.getLogger(__name__)
@@ -53,17 +55,63 @@ data_sets = {
             "cym_Latn",
             "dan_Latn",
             "fra_Latn",
+            "fin_Latn",
             "ita_Latn",
             "nld_Latn",
             "nno_Latn",
             "nob_Latn",
-            "pol_Latn"
+            "pol_Latn",
         ],
     },  # 689G
-    "statmt/cc100": {
+    # This is redundent for mOSCAR, and unreliable
+    # "statmt/cc100": {
+    #     "field": "text",
+    #     "extra": ["sv", "en", "es", "de", "cy", "da", "fr", "it", "la", "nl", "no", "pl"],
+    # },  # 713G
+    "mc4": {
         "field": "text",
-        "extra": ["sv", "en", "es", "de", "cy", "da", "fr", "it", "la", "nl", "no", "pl"],
-    },  # 713G
+        "extra": [
+            "sv",
+            "en",
+            "es",
+            "de",
+            "da",
+            "fr",
+            "it",
+            "nl",
+            "no",
+            "pl",
+        ],  # Note: no Welsh or Latin
+    },  # ~300G for these languages
+    "togethercomputer/RedPajama-Data-1T": {
+        "field": "text",
+        "extra": [
+            "common_crawl",
+            "c4",
+            "github",
+            "books",
+            "arxiv",
+            "wikipedia",
+            "stackexchange",
+        ],
+    },  # 1T tokens, high quality mix
+    # Add conversational data
+    "HuggingFaceH4/ultrachat_200k": {
+        "field": "messages",
+        "extra": [],
+    },  # 200k conversations
+    "gutenberg": {
+        "field": "text",
+        "extra": [],
+    },  # Project Gutenberg - all public domain
+    # Open access academic content
+    "arxiv": {"field": "text", "extra": []},  # Academic papers, legally redistributable
+    "wikipedia": {
+        "field": "text",
+        "extra": ["sv", "en", "es", "de", "da", "fr", "it", "nl", "no", "pl"],
+    },  # High-quality reference content
+    # Legal news/journalism
+    "cc_news": {"field": "text", "extra": []},  # News articles with proper licensing
 }
 
 
@@ -84,11 +132,18 @@ def download_all_datasets():
                                 name=lang,
                                 split="train",
                                 cache_dir="./datasets",
+                                storage_options={
+                                    "timeout": 5000,
+                                    "retry_total": 10,
+                                    "retry_backoff_factor": 2,
+                                },
                             )
                             logger.info(f"✓ Downloaded {dataset_name}.{lang}")
                             is_done = True
                         except Exception as e:
-                            logger.warning(f"✗ Failed to download {dataset_name}.{lang}: {e}")
+                            logger.warning(
+                                f"✗ Failed to download {dataset_name}.{lang}: {e}"
+                            )
                             i_trys -= 1
                             if i_trys < 0:
                                 is_done = True
@@ -99,6 +154,11 @@ def download_all_datasets():
                             dataset_name,
                             split="train",
                             cache_dir="./datasets",
+                            storage_options={
+                                "timeout": 5000,
+                                "retry_total": 10,
+                                "retry_backoff_factor": 2,
+                            },
                         )
                         logger.info(f"✓ Downloaded {dataset_name}")
                         is_done = True
@@ -122,14 +182,26 @@ def update_progress(dataset_name, lang=None, processed_size=0, total_size=0):
         processed_size += size_gb
         progress = (processed_size / total_size) * 100
         dataset_id = f"{dataset_name}.{lang}" if lang else dataset_name
-        logger.info(f"Progress for {dataset_id}: {progress:.1f}% ({processed_size:.2f}/{total_size:.2f} GB)")
+        logger.info(
+            f"Progress for {dataset_id}: {progress:.1f}% ({processed_size:.2f}/{total_size:.2f} GB)"
+        )
         return processed_size
     except Exception as e:
-        logger.warning(f"Could not update progress for {dataset_name}{f'.{lang}' if lang else ''}: {e}")
+        logger.warning(
+            f"Could not update progress for {dataset_name}{f'.{lang}' if lang else ''}: {e}"
+        )
         return processed_size
 
 
-def update_dataset_timing(dataset_id, dataset_start, start_time, processed_size, total_size, dataset_times, lang=None):
+def update_dataset_timing(
+    dataset_id,
+    dataset_start,
+    start_time,
+    processed_size,
+    total_size,
+    dataset_times,
+    lang=None,
+):
     # Sonny ---> Calculate and store dataset loading time
     dataset_time = time.time() - dataset_start
     dataset_times[dataset_id] = dataset_time
@@ -138,11 +210,15 @@ def update_dataset_timing(dataset_id, dataset_start, start_time, processed_size,
     if progress > 0:
         estimated_total = elapsed_time / (progress / 100)
         remaining = estimated_total - elapsed_time
-        logger.info(f"Dataset loaded in {dataset_time:.1f}s | Est. remaining: {remaining/60:.1f}min")
+        logger.info(
+            f"Dataset loaded in {dataset_time:.1f}s | Est. remaining: {remaining/60:.1f}min"
+        )
     return dataset_time
 
 
-def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=False, local_data_dir=None):
+def load_all_datasets(
+    max_workers=4, streaming=True, sample=None, offline_mode=False, local_data_dir=None
+):
     dataset_count = 0
     total_size = 0
     start_time = time.time()  # Sonny ---> Track overall start time
@@ -157,9 +233,13 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                     dataset_info = load_dataset_builder(dataset_name, name=lang)
                     size_gb = dataset_info.info.size_in_bytes / (1024**3)
                     total_size += size_gb
-                    logger.info(f"Estimated size of {dataset_name}.{lang}: {size_gb:.2f} GB")
+                    logger.info(
+                        f"Estimated size of {dataset_name}.{lang}: {size_gb:.2f} GB"
+                    )
                 except Exception as e:
-                    logger.warning(f"Could not estimate size for {dataset_name}.{lang}: {e}")
+                    logger.warning(
+                        f"Could not estimate size for {dataset_name}.{lang}: {e}"
+                    )
         else:
             try:
                 dataset_info = load_dataset_builder(dataset_name)
@@ -200,13 +280,25 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                         d.dataset = Dataset.from_list(sampled_list)
 
                     dataset_count += 1
-                    processed_size = update_progress(dataset_name, lang, processed_size, total_size)
-                    update_dataset_timing(dataset_id, dataset_start, start_time, processed_size, total_size, dataset_times, lang)
+                    processed_size = update_progress(
+                        dataset_name, lang, processed_size, total_size
+                    )
+                    update_dataset_timing(
+                        dataset_id,
+                        dataset_start,
+                        start_time,
+                        processed_size,
+                        total_size,
+                        dataset_times,
+                        lang,
+                    )
                     yield d
 
                 except Exception as e:
                     if offline_mode:
-                        logger.warning(f"Skipping {dataset_id} - not available offline: {e}")
+                        logger.warning(
+                            f"Skipping {dataset_id} - not available offline: {e}"
+                        )
                         continue
                     else:
                         logger.error(f"Failed to load {dataset_id}: {e}")
@@ -235,13 +327,24 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
                     d.dataset = Dataset.from_list(sampled_list)
 
                 dataset_count += 1
-                processed_size = update_progress(dataset_name, processed_size=processed_size, total_size=total_size)
-                update_dataset_timing(dataset_id, dataset_start, start_time, processed_size, total_size, dataset_times)
+                processed_size = update_progress(
+                    dataset_name, processed_size=processed_size, total_size=total_size
+                )
+                update_dataset_timing(
+                    dataset_id,
+                    dataset_start,
+                    start_time,
+                    processed_size,
+                    total_size,
+                    dataset_times,
+                )
                 yield d
 
             except Exception as e:
                 if offline_mode:
-                    logger.warning(f"Skipping {dataset_id} - not available offline: {e}")
+                    logger.warning(
+                        f"Skipping {dataset_id} - not available offline: {e}"
+                    )
                     continue
                 else:
                     logger.error(f"Failed to load {dataset_id}: {e}")
@@ -254,11 +357,14 @@ def load_all_datasets(max_workers=4, streaming=True, sample=None, offline_mode=F
 
     # Sonny ---> Print final statistics
     total_time = time.time() - start_time
-    avg_load_time = sum(dataset_times.values()) / len(dataset_times) if dataset_times else 0
+    avg_load_time = (
+        sum(dataset_times.values()) / len(dataset_times) if dataset_times else 0
+    )
     logger.info(f"Successfully loaded {dataset_count} datasets for training")
     logger.info(f"Total processed size: {processed_size:.2f} GB")
     logger.info(f"Total time: {total_time/60:.1f} minutes")
     logger.info(f"Average dataset load time: {avg_load_time:.1f} seconds")
+
 
 def initialize_embedding_matrix(tokenizer, embedding_dim=1024):
     vocab_size = tokenizer.get_vocab_size()
@@ -305,10 +411,18 @@ def batch_iterator(my_datasets, batch_size=10_000):
     except Exception as e:
         print(f"Error: {e}")
         import IPython  # <--------- Sonny: I left this here for you since you use it for debugging ;)
+
         IPython.embed()
 
 
-def train_tokenizer(vocab_size, output_dir, max_workers, streaming=True, offline_mode=False, local_data_dir=None):
+def train_tokenizer(
+    vocab_size,
+    output_dir,
+    max_workers,
+    streaming=True,
+    offline_mode=False,
+    local_data_dir=None,
+):
     try:
         logger.info("Step 1: Build and deduplicate corpus from provided sources")
         my_datasets = load_all_datasets(
@@ -316,10 +430,12 @@ def train_tokenizer(vocab_size, output_dir, max_workers, streaming=True, offline
             streaming=streaming,
             sample=None,
             offline_mode=offline_mode,
-            local_data_dir=local_data_dir
+            local_data_dir=local_data_dir,
         )
 
-        logger.info("Step 2: Train ByteLevelBPE tokenizer using datasets library multithreading")
+        logger.info(
+            "Step 2: Train ByteLevelBPE tokenizer using datasets library multithreading"
+        )
         tokenizer = ByteLevelBPETokenizer()
 
         # The datasets library handles multithreading internally when we iterate through the datasets
@@ -374,12 +490,12 @@ def save_tokenizer_config(tokenizer_dir, vocab_size, embedding_dim):
         "bos_token": SPECIAL_TOKENS["bos_token"],
         "eos_token": SPECIAL_TOKENS["eos_token"],
         "unk_token": SPECIAL_TOKENS["unk_token"],
-        "mask_token": SPECIAL_TOKENS["mask_token"]
+        "mask_token": SPECIAL_TOKENS["mask_token"],
     }
 
     config_path = os.path.join(tokenizer_dir, "config.json")
     try:
-        with open(config_path, 'w', encoding='utf-8') as f:
+        with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
         logger.info(f"Saved tokenizer config to {config_path}")
     except Exception as e:
@@ -477,7 +593,9 @@ def main(
     logger.info(f"Using max_workers={max_workers} for datasets multiprocessing")
     logger.info(f"Streaming mode: {'enabled' if streaming else 'disabled'}")
     if not streaming:
-        logger.info("Non-streaming mode will use more memory but enables better multiprocessing")
+        logger.info(
+            "Non-streaming mode will use more memory but enables better multiprocessing"
+        )
 
     try:
         logger.info("Step 1: Train tokenizer")
@@ -487,7 +605,7 @@ def main(
             max_workers,
             streaming=streaming,
             offline_mode=offline,
-            local_data_dir=local_data_dir
+            local_data_dir=local_data_dir,
         )
 
         logger.info("Step 2: Validate tokenizer")
