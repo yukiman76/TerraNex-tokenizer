@@ -10,13 +10,12 @@ import sys
 import click
 import numpy as np
 import torch
+from datasets import Dataset, load_dataset, load_dataset_builder
 from tokenizers import ByteLevelBPETokenizer
 from tqdm import tqdm
 
 # from transformers import PreTrainedTokenizerFast
 from transformers import GPT2TokenizerFast
-
-from datasets import Dataset, load_dataset, load_dataset_builder
 
 # Move logging configuration to after click options
 logger = logging.getLogger(__name__)
