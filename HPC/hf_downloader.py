@@ -56,7 +56,6 @@ logger.propagate = False
 
 CACHE_DIR = os.getenv("HF_CACHE_DIR", "./datasets")
 MAX_RETRIES = max(1, min(50, int(os.getenv("HF_MAX_RETRIES", "10"))))
-LOCK_EXPIRY_HOURS = max(1, min(168, int(os.getenv("HF_LOCK_EXPIRY_HOURS", "48"))))
 RETRY_DELAY = max(1, min(60, int(os.getenv("HF_RETRY_DELAY", "1"))))
 
 VALID_DATASET_PREFIXES = {
@@ -112,15 +111,13 @@ DATA_SETS = {
 }
 
 STATUS_PATH = Path(CACHE_DIR) / "_status.json"
-LOCKS_DIR = Path(CACHE_DIR) / "_locks"
-LOCKS_DIR.mkdir(parents=True, exist_ok=True)
 
 LOCK_TIMEOUT = 30
 FILE_OPERATION_TIMEOUT = 60
 VERIFICATION_SAMPLES = 5
 DOWNLOAD_VERIFICATION_SAMPLES = 3
-MAX_MEMORY_GB = 8.0
-HF_TOKEN = os.getenv("HF_TOKEN")
+MAX_MEMORY_GB = 8.
+HF_TOKEN = os.environ.get("HF_TOKEN")
 SAFE_CHAR_PATTERN = re.compile(r"[^a-zA-Z0-9._-]")
 _last_memory_check = {"time": 0, "value": 0.0}
 MEMORY_CHECK_INTERVAL = 5.0  # seconds
@@ -265,96 +262,50 @@ def save_status(status: dict[str, Any]) -> None:
     save_status_optimized(status, force_sync=True)
 
 
-def lock_path(dataset_id: str) -> Path:
-    safe_id = generate_safe_dataset_id(dataset_id)
-    return LOCKS_DIR / f"{safe_id}.lock"
-
-
 @contextmanager
-def atomic_lock(dataset_id: str):
-    lock_file = lock_path(dataset_id)
-    lock_acquired = False
+def process_lock():
+    """Simple process lock using a PID file in the cache directory."""
+    lock_file = Path(CACHE_DIR) / "downloader.pid"
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
     file_handle = None
 
     try:
         file_handle = open(lock_file, "w")
         fcntl.flock(file_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-        timestamp = datetime.now(UTC).isoformat()
-        file_handle.write(timestamp)
+        # Write PID and timestamp
+        pid_info = {
+            "pid": os.getpid(),
+            "started": datetime.now(UTC).isoformat()
+        }
+        file_handle.write(json.dumps(pid_info, indent=2))
         file_handle.flush()
-        os.fsync(file_handle.fileno())
 
-        lock_acquired = True
-        logger.debug(f"Acquired lock for {dataset_id}")
-        yield True
+        logger.debug("Acquired process lock")
+        yield
 
     except OSError as e:
-        logger.debug(f"Could not acquire lock for {dataset_id}: {e}")
-        yield False
-    except Exception as e:
-        logger.error(f"Error in atomic_lock for {dataset_id}: {e}")
-        yield False
+        logger.error(f"Another instance is already running: {e}")
+        raise SystemExit(1)
     finally:
         if file_handle:
             try:
                 file_handle.close()
             except OSError:
                 pass
-        if lock_acquired:
-            try:
-                if lock_file.exists():
-                    lock_file.unlink()
-                    logger.debug(f"Released lock for {dataset_id}")
-            except OSError:
-                pass
-
-
-def lock_exists(dataset_id: str) -> bool:
-    path = lock_path(dataset_id)
-    if not path.exists():
-        return False
-
-    try:
-        with open(path) as f:
-            ts_str = f.read().strip()
-            ts = datetime.fromisoformat(ts_str)
-
-            if datetime.now(UTC) - ts > timedelta(hours=LOCK_EXPIRY_HOURS):
-                logger.warning(f"Stale lock for {dataset_id} expired. Removing.")
-                path.unlink()
-                return False
-            return True
-    except (OSError, ValueError) as e:
-        logger.warning(f"Invalid lock file for {dataset_id}: {e}")
         try:
-            path.unlink()
+            if lock_file.exists():
+                lock_file.unlink()
+                logger.debug("Released process lock")
         except OSError:
             pass
-        return False
-
-
-def cleanup_locks():
-    try:
-        for lock_file in LOCKS_DIR.glob("*.lock"):
-            try:
-                with open(lock_file) as f:
-                    ts_str = f.read().strip()
-                    ts = datetime.fromisoformat(ts_str)
-
-                    if datetime.now(UTC) - ts > timedelta(hours=LOCK_EXPIRY_HOURS):
-                        lock_file.unlink()
-                        logger.info(f"Cleaned up expired lock: {lock_file.name}")
-            except (OSError, ValueError):
-                lock_file.unlink()
-                logger.info(f"Cleaned up invalid lock: {lock_file.name}")
-    except Exception as e:
-        logger.error(f"Error during lock cleanup: {e}")
 
 
 def check_cache_permissions() -> bool:
     try:
-        test_file = LOCKS_DIR / ".test_write"
+        cache_dir = Path(CACHE_DIR)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        test_file = cache_dir / ".test_write"
         test_file.write_text("test")
         test_file.unlink()
         return True
@@ -400,7 +351,7 @@ def download_dataset_with_retry(
                 name=lang,
                 split="train",
                 cache_dir=CACHE_DIR,
-                streaming=True,
+                #streaming=True,  # Streaming can be turned on for large datasets
                 token=HF_TOKEN,
             )
 
@@ -475,8 +426,6 @@ def download_all_datasets(force: bool = False) -> None:
     failure_count = 0
     pending_updates = []
 
-    cleanup_locks()
-
     total_datasets = sum(
         len(config["extra"]) if config["extra"] else 1 for config in DATA_SETS.values()
     )
@@ -501,34 +450,23 @@ def download_all_datasets(force: bool = False) -> None:
                 logger.info(f"Skipping {dataset_id}, already marked done.")
                 continue
 
-            if lock_exists(dataset_id) and not force:
-                logger.info(
-                    f"Skipping {dataset_id}, already downloading in another job."
-                )
-                continue
+            if download_dataset_with_retry(dataset_name, lang):
+                status[dataset_id] = "done"
+                success_count += 1
+            else:
+                status[dataset_id] = "failed"
+                failure_count += 1
 
-            with atomic_lock(dataset_id) as lock_acquired:
-                if not lock_acquired and not force:
-                    logger.info(f"Could not acquire lock for {dataset_id}, skipping.")
-                    continue
+            pending_updates.append(dataset_id)
 
-                if download_dataset_with_retry(dataset_name, lang):
-                    status[dataset_id] = "done"
-                    success_count += 1
-                else:
-                    status[dataset_id] = "failed"
-                    failure_count += 1
-
-                pending_updates.append(dataset_id)
-
-                if len(pending_updates) >= 5:
-                    try:
-                        save_status_optimized(
-                            status, force_sync=False
-                        )  # No fsync for intermediate saves
-                        pending_updates.clear()
-                    except Exception as e:
-                        logger.error(f"Failed to save status: {e}")
+            if len(pending_updates) >= 5:
+                try:
+                    save_status_optimized(
+                        status, force_sync=False
+                    )  # No fsync for intermediate saves
+                    pending_updates.clear()
+                except Exception as e:
+                    logger.error(f"Failed to save status: {e}")
 
     if pending_updates:
         try:
@@ -604,39 +542,32 @@ def verify_downloads() -> None:
 
 def signal_handler(signum, frame):
     logger.info(f"Received signal {signum}, cleaning up...")
-    cleanup_locks()
     sys.exit(0)
 
 
 @click.command()
 @click.option("--download-only", is_flag=True, help="Only download datasets")
 @click.option("--verify", is_flag=True, help="Verify downloaded datasets")
-@click.option("--force", is_flag=True, help="Force redownload even if done or locked")
-@click.option("--cleanup", is_flag=True, help="Clean up expired locks")
-def main(download_only: bool, verify: bool, force: bool, cleanup: bool):
+@click.option("--force", is_flag=True, help="Force redownload even if already done")
+def main(download_only: bool, verify: bool, force: bool):
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     try:
-        if cleanup:
-            cleanup_locks()
-            return
+        with process_lock():
+            if download_only:
+                download_all_datasets(force=force)
+            if verify:
+                verify_downloads()
 
-        if download_only:
-            download_all_datasets(force=force)
-        if verify:
-            verify_downloads()
-
-        if not any([download_only, verify, cleanup]):
-            click.echo("No action specified. Use --help for options.")
+            if not any([download_only, verify]):
+                click.echo("No action specified. Use --help for options.")
 
     except KeyboardInterrupt:
         logger.info("Process interrupted by user")
-        cleanup_locks()
         sys.exit(0)
     except Exception as e:
         logger.error(f"Critical error: {e}", exc_info=True)
-        cleanup_locks()
         sys.exit(1)
 
 
