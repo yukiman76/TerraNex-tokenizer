@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 import click
 import psutil
+
 from datasets import Dataset, load_dataset
 
 logging.basicConfig(
@@ -21,7 +22,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("📥")
 
 CACHE_DIR = os.getenv("HF_CACHE_DIR", "./datasets")
 MAX_RETRIES = max(1, min(50, int(os.getenv("HF_MAX_RETRIES", "10"))))
