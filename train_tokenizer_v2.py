@@ -38,11 +38,11 @@ SPECIAL_TOKENS = {
 }
 
 data_sets = {
-    "bigcode/the-stack-march-sample-special-tokens-stripped": {
-        "field": "content",
-        "extra": [],
-    },  # 1.1G
-    "codeparrot/github-code": {"field": "code", "extra": []},  # 1.1 TB
+    # "bigcode/the-stack-march-sample-special-tokens-stripped": {
+    #     "field": "content",
+    #     "extra": [],
+    # },  # 1.1G
+    # "codeparrot/github-code": {"field": "code", "extra": []},  # 1.1 TB
     "bigcode/the-stack-github-issues": {"field": "content", "extra": []},  # 66.6 G
     "iohadrubin/wikitext-103-raw-v1": {"field": "text", "extra": []},  # 310M
     "oscar-corpus/mOSCAR": {
@@ -130,6 +130,7 @@ def download_all_datasets():
                                 name=lang,
                                 split="train",
                                 cache_dir="./datasets",
+                                trust_remote_code=True,
                                 storage_options={
                                     "timeout": 5000,
                                     "retry_total": 10,
@@ -153,6 +154,7 @@ def download_all_datasets():
                             dataset_name,
                             split="train",
                             cache_dir="./datasets",
+                            trust_remote_code=True,
                             storage_options={
                                 "timeout": 5000,
                                 "retry_total": 10,
@@ -173,6 +175,7 @@ def download_all_datasets():
                 is_done = True
 
     import IPython
+
     IPython.embed()
     logger.info("Dataset download process completed!")
     logger.info("failed_list")
