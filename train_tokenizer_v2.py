@@ -38,31 +38,31 @@ SPECIAL_TOKENS = {
 }
 
 data_sets = {
-    # "bigcode/the-stack-march-sample-special-tokens-stripped": {
-    #     "field": "content",
-    #     "extra": [],
-    # },  # 1.1G
-    # "codeparrot/github-code": {"field": "code", "extra": []},  # 1.1 TB
-    # "bigcode/the-stack-github-issues": {"field": "content", "extra": []},  # 66.6 G
-    # "iohadrubin/wikitext-103-raw-v1": {"field": "text", "extra": []},  # 310M
-    # "oscar-corpus/mOSCAR": {
-    #     "field": "text",
-    #     "extra": [
-    #         "swe_Latn",
-    #         "eng_Latn",
-    #         "spa_Latn",
-    #         "deu_Latn",
-    #         "cym_Latn",
-    #         "dan_Latn",
-    #         "fra_Latn",
-    #         "fin_Latn",
-    #         "ita_Latn",
-    #         "nld_Latn",
-    #         "nno_Latn",
-    #         "nob_Latn",
-    #         "pol_Latn",
-    #     ],
-    # },  # 689G
+    "bigcode/the-stack-march-sample-special-tokens-stripped": {
+        "field": "content",
+        "extra": [],
+    },  # 1.1G
+    "codeparrot/github-code": {"field": "code", "extra": []},  # 1.1 TB
+    "bigcode/the-stack-github-issues": {"field": "content", "extra": []},  # 66.6 G
+    "iohadrubin/wikitext-103-raw-v1": {"field": "text", "extra": []},  # 310M
+    "oscar-corpus/mOSCAR": {
+        "field": "text",
+        "extra": [
+            "swe_Latn",
+            "eng_Latn",
+            "spa_Latn",
+            "deu_Latn",
+            "cym_Latn",
+            "dan_Latn",
+            "fra_Latn",
+            "fin_Latn",
+            "ita_Latn",
+            "nld_Latn",
+            "nno_Latn",
+            "nob_Latn",
+            "pol_Latn",
+        ],
+    },  # 689G
     "allenai/c4": {
         "field": "text",
         "extra": [
@@ -175,7 +175,6 @@ def download_all_datasets():
                 is_done = True
 
     import IPython
-
     IPython.embed()
     logger.info("Dataset download process completed!")
     logger.info("failed_list")
