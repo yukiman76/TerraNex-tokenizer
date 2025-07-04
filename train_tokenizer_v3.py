@@ -622,6 +622,16 @@ def main(
     # Log multiprocessing settings
     logger.info(f"Using max_workers={max_workers} for datasets multiprocessing")
     logger.info(f"Streaming mode: {'enabled' if streaming else 'disabled'}")
+    logger.info(f"tokenizer_out_dir {tokenizer_out_dir}")
+    logger.info(f"vocab_size {vocab_size}")
+    logger.info(f"embedding_dim {embedding_dim}")
+    logger.info(f"max_workers {max_workers}")
+    logger.info(f"tokenizer_out_dir {tokenizer_out_dir}")
+    logger.info(f"streaming {streaming}")
+    logger.info(f"offline {offline}")
+    logger.info(f"download_only {download_only}")
+    logger.info(f"local_data_dir {local_data_dir}")
+    logger.info(f"log_level {log_level}")
     if not streaming:
         logger.info(
             "Non-streaming mode will use more memory but enables better multiprocessing"
