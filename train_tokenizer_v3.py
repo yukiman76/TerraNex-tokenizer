@@ -8,7 +8,6 @@ import logging
 import sys
 
 import click
-import datasets
 import numpy as np
 import psutil
 import torch
@@ -457,7 +456,7 @@ def train_tokenizer(
         my_datasets = load_all_datasets(
             max_workers=max_workers,
             streaming=streaming,
-            sample_size==1_500_000,
+            sample_size=1_500_000,
             offline_mode=offline_mode,
             local_data_dir=local_data_dir,
         )
@@ -466,9 +465,7 @@ def train_tokenizer(
         logger.info(
             "Step 2: Train ByteLevelBPE tokenizer using datasets library multithreading"
         )
-        tokenizer = ByteLevelBPETokenizer(
-            clean_text=True  # Remove unnecessary whitespace
-            )
+        tokenizer = ByteLevelBPETokenizer()
 
         # The datasets library handles multithreading internally when we iterate through the datasets
         tokenizer.train_from_iterator(
