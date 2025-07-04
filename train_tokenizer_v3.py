@@ -8,7 +8,7 @@ import logging
 import sys
 
 import click
-import dataset
+import datasets
 import numpy as np
 import psutil
 import torch
@@ -457,7 +457,7 @@ def train_tokenizer(
         my_datasets = load_all_datasets(
             max_workers=max_workers,
             streaming=streaming,
-            sample=1_500_000,
+            sample_size==1_500_000,
             offline_mode=offline_mode,
             local_data_dir=local_data_dir,
         )
