@@ -428,9 +428,9 @@ def batch_iterator(my_datasets, batch_size=10_000):
                         continue
                     if isinstance(k[0], list):  # e.g., list of lists
                         for sublist in k:
-                            s = "".join(sublist) if isinstance(sublist[0], str) else ""
+                            s = " ".join(sublist) if isinstance(sublist[0], str) else ""
                     elif isinstance(k[0], str):  # list of strings
-                        s = "".join(k)
+                        s = " ".join(k)
                 elif isinstance(k, str):  # single string
                     s = k
 
