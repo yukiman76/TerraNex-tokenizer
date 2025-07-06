@@ -27,6 +27,10 @@ except ImportError:
     MLFLOW_AVAILABLE = False
 
 
+# Remove all handlers associated with the root logger object (avoid duplicate logs)
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+
 logging.basicConfig(
     level=getattr(logging, "INFO"),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -155,28 +159,19 @@ class MemoryMappedDatasetProcessor:
         max_samples_per_dataset: int
     ) -> Generator[str, None, None]:
         """Create zero-copy streaming generator using memory-mapped files."""
-        
         sample_count = 0
-        
-
         total_datasets = sum(
             len(config["extra"]) if config["extra"] else 1 
             for config in DATA_SETS.values()
         )
         samples_per_dataset = max_samples_per_dataset // total_datasets
-        
         logger.info("Using memory-mapped file access for zero-copy operations")
         logger.info(f"Targeting {samples_per_dataset} samples per dataset component")
-        
-
         for text in self._process_cached_datasets_with_mmap(samples_per_dataset):
-            yield text
-            sample_count += 1
-            
-
-            if sample_count % 10000 == 0:
-                self.memory_profiler.force_gc_if_needed()
-                
+            # Apply Unicode NFC normalization to every sample
+            if text:
+                yield unicodedata.normalize("NFC", text)
+                sample_count += 1
         logger.info(f"Generated {sample_count} samples from memory-mapped cached files")
     
     def _process_cached_datasets_with_mmap(self, samples_per_dataset: int) -> Generator[str, None, None]:
@@ -218,24 +213,18 @@ class MemoryMappedDatasetProcessor:
         for dataset_path in all_datasets:
             if sample_count >= target_samples:
                 break
-                
             try:
                 dataset_samples = 0
                 for text in self._process_dataset_with_mmap(dataset_path, samples_per_dataset):
                     yield text
                     sample_count += 1
                     dataset_samples += 1
-                    
                     if dataset_samples >= samples_per_dataset or sample_count >= target_samples:
                         break
-                        
                 logger.debug(f"Processed {dataset_samples} samples from {dataset_path}")
-                
             except Exception as e:
                 logger.warning(f"Failed to process {dataset_path} with mmap: {e}")
                 continue
-        
-        logger.info(f"Generated {sample_count} samples from memory-mapped cached files")
     
     def _process_dataset_with_mmap(self, dataset_path: Path, max_samples: int) -> Generator[str, None, None]:
         """Route dataset processing based on format detection."""
@@ -284,15 +273,19 @@ class MemoryMappedDatasetProcessor:
             import pyarrow.parquet as pq
             table = pq.read_table(str(file_path), memory_map=True)
             sample_count = 0
+            total_records = 0
             for batch in table.to_batches(max_chunksize=1000):
                 for record in batch.to_pylist():
+                    total_records += 1
                     text = self._extract_text_from_record(record)
-                    if text and len(text.strip()) > 10:
-                        if len(text) > 10:
-                            yield text
-                            sample_count += 1
-                            if sample_count >= max_samples:
-                                return
+                    if text:
+                        logger.debug(f"[PARQUET] Record {total_records}: {text[:80]!r}")
+                        yield text
+                        sample_count += 1
+                        if sample_count >= max_samples:
+                            logger.info(f"Yielded {sample_count} samples from {file_path}")
+                            return
+            logger.info(f"Processed {total_records} records, yielded {sample_count} samples from {file_path}")
         except ImportError:
             logger.warning("PyArrow not available, skipping Parquet files")
             return
@@ -352,20 +345,32 @@ class MemoryMappedDatasetProcessor:
             position = newline_pos + 1
     
     def _extract_text_from_record(self, record: Dict) -> Optional[str]:
-        """Extract text from record with automatic field detection."""
-        
-
+        """Extract text from record with automatic field detection and normalization."""
         text_fields = ['text', 'content', 'code', 'body', 'message']
-        
         for field in text_fields:
-            if field in record:
-                return self._extract_text_content(record, field)
-        
-
+            if field in record and isinstance(record[field], str):
+                logger.debug(f"[EXTRACT] Field '{field}' found: {record[field][:80]!r}")
+                return unicodedata.normalize("NFC", record[field])
+            if field in record and isinstance(record[field], list):
+                # Handle list of dicts with 'text' key
+                items = record[field]
+                if all(isinstance(x, dict) and 'text' in x for x in items):
+                    joined = " ".join([str(x['text']) for x in items if isinstance(x, dict) and 'text' in x and x['text']])
+                    logger.debug(f"[EXTRACT] Field '{field}' is list of dicts, joined: {joined[:80]!r}")
+                    return unicodedata.normalize("NFC", joined)
+                # Fallback: join all string items
+                joined = " ".join([str(x) for x in items if isinstance(x, str)])
+                logger.debug(f"[EXTRACT] Field '{field}' is list, joined: {joined[:80]!r}")
+                return unicodedata.normalize("NFC", joined)
+        # Restrictive fallback: only use a string field if its key is not in a list of known non-text fields
+        non_text_fields = {'id', 'index', 'idx', 'uuid', 'guid', 'key'}
         for key, value in record.items():
-            if isinstance(value, str) and len(value) > 10:
-                return value
-        
+            if key.lower() in non_text_fields:
+                continue
+            if isinstance(value, str):
+                logger.debug(f"[EXTRACT] Fallback string field '{key}': {value[:80]!r}")
+                return unicodedata.normalize("NFC", value)
+        logger.warning(f"[EXTRACT] No suitable text field found in record: {list(record.keys())}")
         return None
     
     def cleanup_mmap_objects(self):
@@ -789,6 +794,21 @@ def train_tokenizer_with_mmap(
     text_generator = processor.create_streaming_generator(
         max_samples_per_dataset=final_samples
     )
+    # Print first 5 samples for debugging (use a separate processor to avoid exhausting mmap state)
+    logger.debug("First 5 samples for training:")
+    preview_processor = MemoryMappedDatasetProcessor(memory_profiler, cache_dir, lowercase=lowercase)
+    preview_generator = preview_processor.create_streaming_generator(max_samples_per_dataset=final_samples)
+    preview = []
+    for i, sample in enumerate(preview_generator):
+        logger.debug(f"Sample {i+1}: {repr(sample)[:120]}")
+        preview.append(sample)
+        if i >= 4:
+            break
+    preview_processor.cleanup_mmap_objects()
+
+    # Create a new processor and generator for actual training
+    processor = MemoryMappedDatasetProcessor(memory_profiler, cache_dir, lowercase=lowercase)
+    text_generator = processor.create_streaming_generator(max_samples_per_dataset=final_samples)
     memory_profiler.log_memory_usage("before training")
     logger.info("Step 2: Train ByteLevelBPE tokenizer using memory-mapped data")
     convergence = VocabularyConvergenceDetector()
@@ -823,8 +843,8 @@ def train_tokenizer_with_mmap(
     )
     tokenizer.train_from_iterator(
         text_generator,
-        vocab_size=vocab_size,
-        min_frequency=2,
+        vocab_size=vocab_size,  # Recommended: 32000–50000 unless you have a massive dataset
+        min_frequency=5,        # More robust default to avoid rare/spurious tokens
         special_tokens=list(SPECIAL_TOKENS.values()),
         show_progress=True,
     )
@@ -836,7 +856,10 @@ def train_tokenizer_with_mmap(
     sample_limit = 1000
     processor2 = MemoryMappedDatasetProcessor(memory_profiler, cache_dir, lowercase=lowercase)
     text_gen_for_fertility = processor2.create_streaming_generator(max_samples_per_dataset=sample_limit)
+    logger.info("First 5 samples for fertility calculation:")
     for i, text in enumerate(text_gen_for_fertility):
+        if i < 5:
+            logger.debug(f"Fertility sample {i+1}: {repr(text)[:120]}")
         if i >= sample_limit:
             break
         if not text or not isinstance(text, str):
@@ -876,8 +899,8 @@ def train_tokenizer_with_mmap(
 
 
 
-def validate_tokenizer_native(tokenizer_dir: str) -> ByteLevelBPETokenizer:
-    """Native ByteLevelBPETokenizer validation with comprehensive error handling."""
+def validate_tokenizer_native(tokenizer_dir: str, lowercase: bool = False) -> ByteLevelBPETokenizer:
+    """Native ByteLevelBPETokenizer validation with comprehensive error handling and normalization consistency."""
     
     vocab_file = os.path.join(tokenizer_dir, "vocab.json")
     merges_file = os.path.join(tokenizer_dir, "merges.txt")
@@ -891,7 +914,17 @@ def validate_tokenizer_native(tokenizer_dir: str) -> ByteLevelBPETokenizer:
     try:
 
         tokenizer = ByteLevelBPETokenizer(vocab_file, merges_file)
-        
+        # Set the same normalizer pipeline as in training for consistency
+        norm_sequence = [normalizers.NFC()]
+        if lowercase:
+            norm_sequence.append(normalizers.Lowercase())
+        norm_sequence.append(normalizers.Replace("\t", " "))
+        norm_sequence.append(normalizers.Replace("\u00A0", " "))
+        norm_sequence.append(normalizers.Replace(r"[\x00-\x09\x0B-\x1F\x7F]", ""))
+        norm_sequence.append(normalizers.Replace(r"\s+", " "))
+        norm_sequence.append(normalizers.Strip())
+        tokenizer.normalizer = normalizers.Sequence(norm_sequence)
+        logger.info(f"Set normalizer pipeline after loading: NFC, lowercase={lowercase}, whitespace, control char removal")
 
         vocab = tokenizer.get_vocab()
         missing_tokens = []
@@ -1215,6 +1248,12 @@ def save_tokenizer_config(tokenizer_dir: str, vocab_size: int, embedding_dim: in
     type=float,
     help="IoS threshold for Picky BPE token pruning (default: 0.9)",
 )
+@click.option(
+    "--log-file",
+    default="tokenizer_training.log",
+    show_default=True,
+    help="Path to log file for saving logs (in addition to console)",
+)
 def main(
     tokenizer_out_dir: str,
     vocab_size: int,
@@ -1228,6 +1267,7 @@ def main(
     lowercase: bool,
     picky_bpe: bool = False,
     ios_threshold: float = 0.9,
+    log_file: str = "tokenizer_training.log",
 ) -> None:
     """
     Simple memory-efficient tokenizer training with memory-mapped file processing.
@@ -1238,12 +1278,21 @@ def main(
     - Real-time memory profiling
     - Optional: Picky BPE algorithm (BPE Gets Picky)
     """
+    # Remove all handlers associated with the root logger object (avoid duplicate logs)
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    # Set up handlers: console and file
+    handlers = [logging.StreamHandler(sys.stdout)]
+    if log_file:
+        handlers.append(logging.FileHandler(log_file, mode="w", encoding="utf-8"))
     logging.basicConfig(
         level=getattr(logging, log_level),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)],
+        handlers=handlers,
     )
     logger = logging.getLogger(__name__)
+    logger.setLevel(getattr(logging, log_level))
+    
     mlflow_tracker = None
     if 'MLflowTracker' in globals() and MLFLOW_AVAILABLE:
         mlflow_tracker = MLflowTracker(experiment_name="bpe_tokenizer_training")
@@ -1314,6 +1363,25 @@ def main(
                 mlflow_tracker=mlflow_tracker,
             )
             validated_tokenizer = validate_tokenizer_native(tokenizer_out_dir)
+            # Calculate fertility after reloading from disk
+            sample_limit = 1000
+            processor3 = MemoryMappedDatasetProcessor(memory_profiler, cache_dir="./datasets", lowercase=lowercase)
+            text_gen_for_fertility2 = processor3.create_streaming_generator(max_samples_per_dataset=sample_limit)
+            sample_count2 = 0
+            total_tokens2 = 0
+            total_input_length2 = 0
+            for i, text in enumerate(text_gen_for_fertility2):
+                if i >= sample_limit:
+                    break
+                if not text or not isinstance(text, str):
+                    continue
+                encoding = validated_tokenizer.encode(text)
+                total_tokens2 += len(encoding.ids)
+                total_input_length2 += len(text)
+                sample_count2 += 1
+            fertility_score2 = (total_tokens2 / sample_count2) if sample_count2 > 0 else 0.0
+            compression_ratio2 = (total_input_length2 / total_tokens2) if total_tokens2 > 0 else 1.0
+            logger.info(f"Fertility after reload: {fertility_score2:.4f} (tokens/sample), Compression ratio: {compression_ratio2:.4f} (chars/token)")
             weights = initialize_embedding_matrix(validated_tokenizer, embedding_dim)
             embedding_path = os.path.join(tokenizer_out_dir, "embedding_matrix.npy")
             np.save(embedding_path, weights.cpu().numpy())
