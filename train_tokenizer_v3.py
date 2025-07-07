@@ -11,12 +11,13 @@ import click
 import numpy as np
 import psutil
 import torch
-from datasets import Dataset, load_dataset, load_dataset_builder
-from tokenizers import ByteLevelBPETokenizer
+from tokenizers import ByteLevelBPETokenizer, normalizers
 from tqdm import tqdm
 
 # from transformers import PreTrainedTokenizerFast
 from transformers import GPT2TokenizerFast
+
+from datasets import Dataset, load_dataset, load_dataset_builder
 
 # Move logging configuration to after click options
 logger = logging.getLogger(__name__)
@@ -291,7 +292,7 @@ def load_all_datasets(
                     d.dataset_name = dataset_id
 
                     if sample_size:
-                        d.dataset =  d.dataset.shuffle(seed=42).take(sample_size)
+                        d.dataset = d.dataset.shuffle(seed=42).take(sample_size)
 
                     dataset_count += 1
                     processed_size = update_progress(
@@ -336,7 +337,7 @@ def load_all_datasets(
                 d.dataset_name = dataset_id
 
                 if sample_size:
-                    d.dataset =  d.dataset.shuffle(seed=42).take(sample_size)
+                    d.dataset = d.dataset.shuffle(seed=42).take(sample_size)
 
                 dataset_count += 1
                 processed_size = update_progress(
@@ -467,11 +468,20 @@ def train_tokenizer(
         )
         tokenizer = ByteLevelBPETokenizer()
 
+        norm_sequence = [normalizers.NFC()]
+        # norm_sequence.append(normalizers.Lowercase())
+        norm_sequence.append(normalizers.Replace("\t", " "))
+        norm_sequence.append(normalizers.Replace(r"\s+", " "))
+        norm_sequence.append(normalizers.Replace("\u00a0", " "))
+        # norm_sequence.append(normalizers.Replace(r"[\x00-\x09\x0B-\x1F\x7F]", ""))
+        norm_sequence.append(normalizers.Strip())
+
+        tokenizer.normalizer = normalizers.Sequence(norm_sequence)
         # The datasets library handles multithreading internally when we iterate through the datasets
         tokenizer.train_from_iterator(
             batch_iterator(my_datasets),
             vocab_size=vocab_size,
-            min_frequency=2,  # TODO: we might need to change this
+            min_frequency=3,  # TODO: we might need to change this
             special_tokens=list(SPECIAL_TOKENS.values()),
             show_progress=True,
         )
