@@ -134,3 +134,6 @@ test_parsing_only.py
 test_scaling_logic.py
 test_target_enforcement.py
 last plan.txt
+test_real_data.py
+test_dynamic_system.py
+latest.txt
