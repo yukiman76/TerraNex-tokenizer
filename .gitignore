@@ -117,3 +117,13 @@ train_tokenizer_v3 copy.py.bak
 datasets
 mlruns
 run.txt
+custom_tokenizer_500k/added_tokens.json
+custom_tokenizer_500k/config.json
+custom_tokenizer_500k/embedding_matrix.npy
+custom_tokenizer_500k/embedding_matrix.safetensors
+custom_tokenizer_500k/merges.txt
+custom_tokenizer_500k/special_tokens_map.json
+custom_tokenizer_500k/tokenizer_config.json
+custom_tokenizer_500k/tokenizer.json
+custom_tokenizer_500k/vocab.json
+stats/dataset_load_stats.json
