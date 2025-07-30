@@ -639,7 +639,7 @@ def update_dataset_timing(
 
 
 def load_all_datasets(
-    max_workers=4,
+    max_workers=32,
     streaming=True,
     slurm_logging=False,
     target_data_gb=1500,

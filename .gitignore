@@ -127,3 +127,10 @@ custom_tokenizer_500k/tokenizer_config.json
 custom_tokenizer_500k/tokenizer.json
 custom_tokenizer_500k/vocab.json
 stats/dataset_load_stats.json
+/datasets_changed_name
+intelligent_sampling.txt
+test_language_ratios.py
+test_parsing_only.py
+test_scaling_logic.py
+test_target_enforcement.py
+last plan.txt
