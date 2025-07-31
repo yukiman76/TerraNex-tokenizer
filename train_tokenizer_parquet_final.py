@@ -1,3 +1,4 @@
+import gc  # Added for memory management
 import os
 import time  # Sonny ---> Added for time tracking
 
@@ -25,16 +26,16 @@ logger = logging.getLogger(__name__)
 def parse_data_size(size_str: str) -> float:
     """
     Parse data size string with unit into GB value.
-    
+
     Args:
         size_str: String like "500MB", "1.5GB", "2TB", "2.5TB"
-    
+
     Returns:
         float: Size in GB
-    
+
     Raises:
         ValueError: If format is invalid
-    
+
     Examples:
         parse_data_size("500MB") -> 0.5
         parse_data_size("1.5GB") -> 1.5
@@ -64,8 +65,8 @@ def parse_data_size(size_str: str) -> float:
 
     try:
         value = float(value_str)
-    except ValueError:
-        raise ValueError(f"Invalid number in size: '{value_str}'")
+    except ValueError as err:
+        raise ValueError(f"Invalid number in size: '{value_str}'") from err
 
     if value <= 0:
         raise ValueError(f"Size must be positive, got: {value}")
@@ -135,15 +136,15 @@ class UniversalFilenameParser:
     def parse_filename(self, filename: str, file_path: str = None) -> tuple:
         """
         Parse any parquet filename format and return (dataset_name, subset, language_category, metadata)
-        
+
         Args:
-            filename: The filename to parse  
+            filename: The filename to parse
             file_path: Optional full path to the file for content-based language detection
-        
+
         Examples:
             'HuggingFaceFW_fineweb-2_deu_Latn_0159.parquet'
             → ('HuggingFaceFW/fineweb-2', 'deu_Latn', 'european', {'file_number': '0159'})
-            
+
             'codeparrot_github-code-clean_data_train-00012-of-00880.parquet'
             → ('codeparrot/github-code-clean', None, 'code', {'file_number': '00012', 'total_files': '00880'})
         """
@@ -343,7 +344,6 @@ class UniversalFilenameParser:
         try:
             # Try to import huggingface_hub
             import requests
-            from huggingface_hub import DatasetCardData, list_datasets
 
             dataset_name = context['dataset_name']
 
@@ -367,7 +367,7 @@ class UniversalFilenameParser:
                         if response.status_code == 200:
                             repo_id = candidate
                             break
-                    except:
+                    except Exception:
                         continue
 
                 if not repo_id:
@@ -408,7 +408,6 @@ class UniversalFilenameParser:
         """Detect language by sampling actual parquet file content"""
         try:
             # Try to import langdetect
-            import pandas as pd
             import pyarrow.parquet as pq
             from langdetect import LangDetectException, detect
 
@@ -600,12 +599,12 @@ class DynamicRatioCalculator:
                                   user_language_ratios: dict) -> dict:
         """
         Calculate exact sampling ratios to achieve user's language distribution within target size.
-        
+
         Args:
             dataset_inventory: {(dataset, subset): {'language': str, 'total_size_gb': float, ...}}
-            target_total_gb: User's --target-data-gb parameter  
+            target_total_gb: User's --target-data-gb parameter
             user_language_ratios: {'nordic': 0.30, 'european': 0.45, ...}
-        
+
         Returns:
             sampling_plan: {(dataset, subset): {'sampling_ratio': float, 'target_gb': float, ...}}
         """
@@ -635,7 +634,7 @@ class DynamicRatioCalculator:
         """Analyze available data by language category"""
         available = {}
 
-        for (dataset, subset), info in dataset_inventory.items():
+        for (_dataset, _subset), info in dataset_inventory.items():
             language = info['language']
             size_gb = info['total_size_gb']
 
@@ -647,7 +646,7 @@ class DynamicRatioCalculator:
                 }
 
             available[language]['total_gb'] += size_gb
-            available[language]['datasets'].append((dataset, subset, size_gb))
+            available[language]['datasets'].append((_dataset, _subset, size_gb))
             available[language]['largest_dataset_gb'] = max(
                 available[language]['largest_dataset_gb'],
                 size_gb
@@ -679,9 +678,9 @@ class DynamicRatioCalculator:
                 logger.info(f"Sampling {lang_sampling_ratio:.3f} of {language} data ({target_gb:.1f}GB from {available_gb:.1f}GB)")
 
             # Apply this ratio to all datasets in this language
-            for (dataset, subset), info in dataset_inventory.items():
+            for (_dataset, _subset), info in dataset_inventory.items():
                 if info['language'] == language:
-                    sampling_plan[(dataset, subset)] = {
+                    sampling_plan[(_dataset, _subset)] = {
                         'language': language,
                         'available_gb': info['total_size_gb'],
                         'sampling_ratio': lang_sampling_ratio,
@@ -705,7 +704,7 @@ class DynamicRatioCalculator:
             scale_factor = target_total_gb / actual_total_gb
             logger.info(f"Applying final scale factor: {scale_factor:.3f} to fit target")
 
-            for key, plan in sampling_plan.items():
+            for _key, plan in sampling_plan.items():
                 plan['sampling_ratio'] *= scale_factor
                 plan['target_gb'] *= scale_factor
                 plan['target_files'] = max(1, int(plan['target_files'] * scale_factor))
@@ -769,7 +768,7 @@ class DatasetCompositionAnalyzer:
     def analyze_available_data(self, datasets_dir: str) -> dict:
         """
         Analyze what data is actually available in the datasets directory.
-        
+
         Returns:
             dict: {
                 'total_size_gb': float,
@@ -796,7 +795,6 @@ class DatasetCompositionAnalyzer:
             return {'error': f"No parquet files found in: {datasets_dir}"}
 
         # Build inventory using existing logic
-        dataset_inventory = {}
         total_size_gb = 0
         languages = {}
         datasets_found = set()
@@ -848,7 +846,7 @@ class DatasetCompositionAnalyzer:
     def validate_user_ratios(self, analysis: dict, user_language_ratios: dict) -> dict:
         """
         Validate user ratios against available data and provide recommendations.
-        
+
         Returns:
             dict: {
                 'valid': bool,
@@ -861,7 +859,7 @@ class DatasetCompositionAnalyzer:
             return {'valid': False, 'issues': [analysis['error']], 'recommendations': [], 'adjusted_ratios': {}}
 
         available_languages = set(analysis['languages'].keys())
-        requested_languages = set(lang for lang, ratio in user_language_ratios.items() if ratio > 0)
+        requested_languages = {lang for lang, ratio in user_language_ratios.items() if ratio > 0}
 
         issues = []
         recommendations = []
@@ -1029,7 +1027,7 @@ LANGUAGE_CATEGORIES = {
 
 def parse_dataset_filename(filename):
     """Parse dataset filename to extract dataset name and language subset
-    
+
     Handles multiple filename formats:
     - Simple: HuggingFaceFW_fineweb-2_swe_Latn_0001.parquet -> ('HuggingFaceFW/fineweb-2', 'swe_Latn')
     - Complex: codeparrot_github-code-clean_data_train-00012-of-00880.parquet -> ('codeparrot/github-code-clean', None)
@@ -1047,7 +1045,7 @@ def parse_dataset_filename(filename):
         return None, None
 
     # Known language codes for detection
-    LANGUAGE_CODES = {
+    language_codes = {
         # Nordic languages
         'da', 'sv', 'no', 'swe_Latn', 'dan_Latn', 'fin_Latn', 'nno_Latn', 'nob_Latn',
         # European languages
@@ -1102,14 +1100,14 @@ def parse_dataset_filename(filename):
     # Check for lang_Latn pattern (2 parts)
     if len(content_parts) >= 3:
         potential_lang = f"{content_parts[-2]}_{content_parts[-1]}"
-        if potential_lang in LANGUAGE_CODES:
+        if potential_lang in language_codes:
             language_subset = potential_lang
             dataset_parts = content_parts[:-2]
 
     # Check for single language code
     if not language_subset and len(content_parts) >= 2:
         potential_lang = content_parts[-1]
-        if potential_lang in LANGUAGE_CODES:
+        if potential_lang in language_codes:
             language_subset = potential_lang
             dataset_parts = content_parts[:-1]
 
@@ -1124,43 +1122,6 @@ def parse_dataset_filename(filename):
 
     return dataset_name, language_subset
 
-
-def get_dataset_sampling_info(dataset_name, language_subset=None):
-    """Get language category and sampling ratio for a dataset"""
-    key = (dataset_name, language_subset)
-
-    if key in DATASET_LANGUAGE_MAP:
-        category, size_mb, sampling_ratio = DATASET_LANGUAGE_MAP[key]
-        return category, sampling_ratio, size_mb
-
-    # Fallback for unknown datasets
-    logger.warning(f"Unknown dataset: {dataset_name} (subset: {language_subset}) - using conservative sampling")
-    return "unknown", 0.2, 0.0  # Conservative 20% sampling for unknown datasets
-
-
-def validate_dataset_completeness(discovered_datasets):
-    """Validate that all expected datasets are present"""
-    expected_datasets = set(dataset_name for (dataset_name, _), _ in DATASET_LANGUAGE_MAP.items())
-    found_datasets = set(discovered_datasets.keys())
-
-    missing_datasets = expected_datasets - found_datasets
-    unexpected_datasets = found_datasets - expected_datasets
-
-    if missing_datasets:
-        logger.warning(f"⚠️  Missing expected datasets: {sorted(missing_datasets)}")
-        for dataset in missing_datasets:
-            # Find size from mapping
-            for (ds_name, subset), (category, size_mb, ratio) in DATASET_LANGUAGE_MAP.items():
-                if ds_name == dataset:
-                    logger.warning(f"   - {dataset}: {size_mb/1024:.1f}GB {category} data will be missing")
-                    break
-
-    if unexpected_datasets:
-        logger.info(f"📦 Found unexpected datasets: {sorted(unexpected_datasets)}")
-        logger.info("   These will use fallback 20% sampling ratio")
-
-    logger.info(f"✅ Dataset validation: {len(found_datasets)}/{len(expected_datasets)} expected datasets found")
-    return len(missing_datasets) == 0
 
 
 def validate_file_accessibility(file_paths):
@@ -1193,32 +1154,6 @@ def validate_file_accessibility(file_paths):
     logger.info(f"✅ File validation: {len(file_paths)} files accessible, {total_size/1024**3:.1f}GB total")
     return True
 
-
-def log_sampling_plan_summary(target_data_gb=1500):
-    """Log the sampling plan summary based on DATASET_LANGUAGE_MAP"""
-    category_totals = dict.fromkeys(LANGUAGE_CATEGORIES.keys(), 0.0)
-
-    # Calculate totals from the mapping
-    for key, (category, size_mb, sampling_ratio) in DATASET_LANGUAGE_MAP.items():
-        category_totals[category] += size_mb * sampling_ratio
-
-    total_sampled_size = sum(category_totals.values())
-    total_original_size = sum(size_mb for _, size_mb, _ in DATASET_LANGUAGE_MAP.values())
-
-    logger.info("=== DATASET SAMPLING PLAN ===")
-    logger.info(f"Target total data: {target_data_gb:.1f} GB")
-    logger.info(f"Original total data: {total_original_size/1024:.1f} GB")
-    logger.info(f"Planned sampled data: {total_sampled_size/1024:.1f} GB")
-    logger.info(f"Overall sampling ratio: {total_sampled_size/total_original_size:.3f}")
-
-    for category, target_info in LANGUAGE_CATEGORIES.items():
-        if category_totals[category] > 0:
-            target_gb = target_data_gb * target_info['target_ratio']
-            actual_gb = category_totals[category] / 1024
-            percentage = (actual_gb / (total_sampled_size/1024)) * 100 if total_sampled_size > 0 else 0
-            status = "✓" if abs(percentage - target_info['target_ratio']*100) < 3 else "⚠"
-
-            logger.info(f"{category.upper()}: {actual_gb:.1f}GB ({percentage:.1f}%) target={target_info['target_ratio']*100:.1f}% {status}")
 
 
 def get_parquet_metadata(file_paths):
@@ -1291,12 +1226,12 @@ def auto_detect_field(file_path):
 def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user_language_ratios=None):
     """
     NEW DYNAMIC DISCOVERY SYSTEM: Discover parquet files and calculate optimal ratios from actual data
-    
+
     Args:
         target_data_gb: Target total data size in GB
         enable_sampling: Whether to apply sampling
         user_language_ratios: {'nordic': 0.30, 'european': 0.45, 'english': 0.15, 'code': 0.10, 'other': 0.0}
-    
+
     Returns:
         Dictionary compatible with existing system: {dataset_name: {"main": [file_paths]}}
     """
@@ -1356,12 +1291,12 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
 
     # Log discovery summary
     total_discovered_gb = sum(info['total_size_gb'] for info in dataset_inventory.values())
-    unique_datasets = len(set(dataset for dataset, subset in dataset_inventory.keys()))
+    unique_datasets = len({dataset for dataset, subset in dataset_inventory.keys()})
     logger.info(f"Discovered: {unique_datasets} datasets, {len(dataset_inventory)} dataset/subset combinations, {total_discovered_gb:.1f}GB total")
 
     # Log by language category
     by_language = {}
-    for (dataset, subset), info in dataset_inventory.items():
+    for (_dataset, _subset), info in dataset_inventory.items():
         lang = info['language']
         if lang not in by_language:
             by_language[lang] = {'count': 0, 'size_gb': 0.0}
@@ -1435,7 +1370,7 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
     logger.info("=== FINAL DATASET SUMMARY ===")
     final_total_gb = 0.0
     for dataset_name, configs in grouped_files.items():
-        for config, files in configs.items():
+        for _config, files in configs.items():
             rows, size_gb = get_parquet_metadata(files)
             final_total_gb += size_gb
             if rows:
@@ -1451,7 +1386,7 @@ def _convert_inventory_to_legacy_format(dataset_inventory):
     """Convert dataset inventory to legacy format when sampling is disabled"""
     grouped_files = {}
 
-    for (dataset_name, subset), info in dataset_inventory.items():
+    for (dataset_name, _subset), info in dataset_inventory.items():
         if dataset_name not in grouped_files:
             grouped_files[dataset_name] = {"main": []}
 
@@ -1471,6 +1406,13 @@ def log_memory_usage():
     process = psutil.Process(os.getpid())
     mem = process.memory_info().rss / (1024 * 1024)  # in MB
     logger.info(f"memory usage: {mem:.2f} MB | {mem/1024:.2f} GB")
+
+
+def get_memory_usage_percent():
+    """Get current system memory usage percentage"""
+    return psutil.virtual_memory().percent
+
+
 
 
 def log_dataset_progress(dataset_id, current_dataset, total_datasets, rows=None, size_gb=None):
@@ -1547,7 +1489,7 @@ def load_all_datasets(
 
     current_dataset = 0
 
-    # Process each dataset
+    # Process each dataset with proper streaming
     for dataset_name, configs in local_files.items():
         for config, local_parquet_files in configs.items():
             current_dataset += 1
@@ -1570,7 +1512,7 @@ def load_all_datasets(
             try:
                 logger.info(f"Using {len(local_parquet_files)} local parquet files for {dataset_id}")
 
-                # Load from local parquet files...
+                # Load from local parquet files with streaming enabled
                 d.dataset = load_dataset(
                     "parquet",
                     data_files=local_parquet_files,
@@ -1578,24 +1520,24 @@ def load_all_datasets(
                     streaming=streaming,
                 )
 
-                # Auto-detect field name from first file.... instead of hardcoding it or overcomplicating it with multiple files!
+                # Auto-detect field name from first file
                 d.affected_field = auto_detect_field(local_parquet_files[0])
                 d.dataset_name = dataset_id
 
                 dataset_count += 1
                 log_dataset_progress(dataset_id, current_dataset, total_dataset_configs, rows, size_gb)
 
-                # Calculate dataset timing first
+                # Calculate dataset timing
                 dataset_time = time.time() - dataset_start
                 dataset_times[dataset_id] = dataset_time
 
-                # Add time estimation with correct parameters
+                # Add time estimation
                 update_dataset_timing(
                     dataset_id,
                     dataset_start,
                     start_time,
-                    current_dataset,  # processed datasets
-                    total_dataset_configs,  # total datasets
+                    current_dataset,
+                    total_dataset_configs,
                     dataset_times
                 )
 
@@ -1670,27 +1612,64 @@ def initialize_embedding_matrix(tokenizer, embedding_dim=1024):
         raise
 
 
-def batch_iterator(my_datasets, batch_size=300, slurm_logging=False):
-    """Iterate over datasets yielding batches of text samples (not character chunks)
-    Smaller batch size provides more diverse samples for better subword learning"""
+def memory_efficient_batch_iterator(my_datasets, initial_batch_size=5000, slurm_logging=False):
+    """
+    Memory-efficient batch iterator with adaptive sizing based on memory pressure.
+    Yields batches of text samples optimized for ByteLevelBPE training.
+    """
+    current_batch_size = initial_batch_size
     i_ds = 1
     record_count = 0
     batch = []
     batch_count = 0
     start_time = time.time()
     last_progress_log = start_time
+    last_memory_check = start_time
+
+    # Memory management thresholds
+    memory_warning_threshold = 75.0   # Start reducing batch size
+    memory_critical_threshold = 85.0  # Aggressive batch size reduction
+    memory_recovery_threshold = 60.0  # Start increasing batch size again
+
+    logger.info(f"Starting memory-efficient batch iterator with initial batch size: {current_batch_size}")
+    logger.info(f"Memory thresholds - Warning: {memory_warning_threshold}%, Critical: {memory_critical_threshold}%, Recovery: {memory_recovery_threshold}%")
 
     try:
         for d in tqdm(my_datasets, desc="Processing Datasets"):
-            for record in tqdm(
-                d.dataset, desc=f"Processing dataset {d.dataset_name} ({i_ds})"
-            ):
+            logger.info(f"Processing dataset: {d.dataset_name} (Dataset {i_ds})")
+
+            for record in tqdm(d.dataset, desc=f"Processing {d.dataset_name}"):
                 record_count += 1
-                # More frequent memory monitoring for early warning
-                if record_count % 25000 == 0:
-                    log_memory_usage()
-                    # Trigger garbage collection to free memory
-                    import gc
+
+                # Memory monitoring and adaptive batch sizing
+                current_time = time.time()
+                if current_time - last_memory_check >= 30:  # Check every 30 seconds
+                    memory_usage = get_memory_usage_percent()
+
+                    # Adaptive batch size scaling
+                    old_batch_size = current_batch_size
+                    if memory_usage > memory_critical_threshold:
+                        # Critical: reduce by 50%
+                        current_batch_size = max(100, current_batch_size // 2)
+                        if old_batch_size != current_batch_size:
+                            logger.warning(f"Critical memory pressure: {memory_usage:.1f}% - reducing batch size: {old_batch_size} → {current_batch_size}")
+                    elif memory_usage > memory_warning_threshold:
+                        # Warning: reduce by 25%
+                        current_batch_size = max(500, int(current_batch_size * 0.75))
+                        if old_batch_size != current_batch_size:
+                            logger.warning(f"Memory pressure detected: {memory_usage:.1f}% - reducing batch size: {old_batch_size} → {current_batch_size}")
+                    elif memory_usage < memory_recovery_threshold and current_batch_size < initial_batch_size:
+                        # Recovery: increase by 25%
+                        current_batch_size = min(initial_batch_size, int(current_batch_size * 1.25))
+                        if old_batch_size != current_batch_size:
+                            logger.info(f"Memory recovered: {memory_usage:.1f}% - increasing batch size: {old_batch_size} → {current_batch_size}")
+
+                    last_memory_check = current_time
+
+                # Periodic garbage collection and memory logging
+                if record_count % 50000 == 0:
+                    memory_usage = get_memory_usage_percent()
+                    logger.info(f"Processed {record_count:,} records | Memory: {memory_usage:.1f}% | Batch size: {current_batch_size}")
                     gc.collect()
 
                 try:
@@ -1711,39 +1690,52 @@ def batch_iterator(my_datasets, batch_size=300, slurm_logging=False):
                 elif isinstance(k, str):  # single string
                     text = k
 
-                # Only add non-empty text with sufficient length for good subword learning
+                # Quality filtering for better BPE training
                 if text and text.strip():
-                    # Filter out very short texts - they don't help BPE learn good subwords
                     stripped_text = text.strip()
-                    if len(stripped_text) >= 50:  # Minimum 50 characters for meaningful subword patterns
-                        # Additional quality filters to improve subword learning
-                        # Skip texts that are mostly numbers, special chars, or very repetitive
+                    if len(stripped_text) >= 50:  # Minimum length for meaningful patterns
+                        # Filter out low-quality text
                         alphanumeric_ratio = sum(c.isalnum() or c.isspace() for c in stripped_text) / len(stripped_text)
                         if alphanumeric_ratio >= 0.7:  # At least 70% alphanumeric + spaces
                             batch.append(stripped_text)
 
-                            # Yield batch when it reaches desired size
-                            if len(batch) >= batch_size:
+                            # Yield batch when it reaches current size
+                            if len(batch) >= current_batch_size:
                                 yield batch
                                 batch = []
                                 batch_count += 1
 
-                                # Slurm-compatible progress logging every 30 minutes
+                                # Slurm-compatible progress logging
                                 if slurm_logging:
                                     current_time = time.time()
                                     if current_time - last_progress_log >= 1800:  # 30 minutes
                                         runtime_hours = (current_time - start_time) / 3600
-                                        tqdm.write(f"Training progress: processed {batch_count} batches, {record_count:,} records - runtime: {runtime_hours:.1f} hours")
+                                        memory_usage = get_memory_usage_percent()
+                                        tqdm.write(f"Training progress: processed {batch_count} batches, {record_count:,} records | Memory: {memory_usage:.1f}% | Batch size: {current_batch_size} - runtime: {runtime_hours:.1f} hours")
                                         last_progress_log = current_time
 
+            # Clean up after each dataset to free memory
+            logger.info(f"Completed dataset {d.dataset_name}. Running cleanup...")
+            gc.collect()
             i_ds += 1
 
         # Yield remaining batch if any
         if batch:
+            logger.info(f"Yielding final batch with {len(batch)} texts")
             yield batch
 
+        # Final statistics
+        total_time = time.time() - start_time
+        final_memory = get_memory_usage_percent()
+        logger.info("Memory-efficient batch iterator completed:")
+        logger.info(f"  - Total batches: {batch_count}")
+        logger.info(f"  - Total records processed: {record_count:,}")
+        logger.info(f"  - Total time: {total_time/60:.1f} minutes")
+        logger.info(f"  - Final memory usage: {final_memory:.1f}%")
+        logger.info(f"  - Final batch size: {current_batch_size}")
+
     except Exception as e:
-        logger.error(f"Error in batch_iterator: {e}")
+        logger.error(f"Error in memory_efficient_batch_iterator: {e}")
         raise
 
 
@@ -1772,26 +1764,24 @@ def train_tokenizer(
         )
 
         logger.info("Starting tokenizer training...")
-        log_memory_usage()  # Only log once at start of training instead of spamming the blody terminal!
-        logger.info(
-            "Step 2: Train ByteLevelBPE tokenizer using datasets library multithreading"
-        )
+        log_memory_usage()
+        logger.info("Step 2: Train ByteLevelBPE tokenizer using datasets library multithreading")
+
         tokenizer = ByteLevelBPETokenizer()
 
         norm_sequence = [normalizers.NFC()]
-        # norm_sequence.append(normalizers.Lowercase())
         norm_sequence.append(normalizers.Replace("\t", " "))
         norm_sequence.append(normalizers.Replace(r"\s+", " "))
         norm_sequence.append(normalizers.Replace("\u00a0", " "))
-        # norm_sequence.append(normalizers.Replace(r"[\x00-\x09\x0B-\x1F\x7F]", ""))
         norm_sequence.append(normalizers.Strip())
 
         tokenizer.normalizer = normalizers.Sequence(norm_sequence)
-        # The datasets library handles multithreading internally when we iterate through the datasets
+
+        # Use memory-efficient batch iterator with adaptive sizing
         tokenizer.train_from_iterator(
-            batch_iterator(my_datasets, slurm_logging=slurm_logging),
+            memory_efficient_batch_iterator(my_datasets, slurm_logging=slurm_logging),
             vocab_size=vocab_size,
-            min_frequency=3,  # Lowered to improve fertility (reduce over-segmentation)
+            min_frequency=1,  # Reduced from 3 to 1 for lower fertility
             special_tokens=list(SPECIAL_TOKENS.values()),
             show_progress=True,
         )
@@ -2064,7 +2054,7 @@ def main(
         )
 
     try:
-        logger.info("Step 1: Train tokenizer")
+        logger.info("Step 1: Train tokenizer using memory-efficient ByteLevelBPE")
         tokenizer = train_tokenizer(
             vocab_size,
             tokenizer_out_dir,
@@ -2073,6 +2063,13 @@ def main(
             slurm_logging=slurm_logging,
             target_data_gb=target_data_gb,
             disable_sampling=disable_sampling,
+            user_language_ratios={
+                'nordic': nordic_ratio,
+                'european': european_ratio,
+                'english': english_ratio,
+                'code': code_ratio,
+                'other': other_ratio
+            },
         )
 
         logger.info("Step 2: Validate tokenizer")
