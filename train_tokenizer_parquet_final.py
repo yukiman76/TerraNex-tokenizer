@@ -108,487 +108,303 @@ class UniversalFilenameParser:
         # Comprehensive language code mappings
         self.language_patterns_2 = {
             'nordic': ['sv', 'da', 'no', 'fi', 'is'],
-            'european': ['de', 'fr', 'es', 'it', 'nl', 'pl', 'pt', 'ro', 'hu', 'cs', 'sk', 'bg', 'hr', 'sl', 'et', 'lv', 'lt'],
+            'european': [
+                'de', 'fr', 'es', 'it', 'nl', 'pl', 'pt', 'ro', 'hu', 'cs', 'sk', 'bg', 'hr', 'sl', 'et', 'lv', 'lt',
+                'ca',  # Catalan
+                'gl',  # Galician
+                'eu',  # Basque
+                'ga',  # Irish
+                'mt',  # Maltese
+                'el',  # Greek
+                'sr',  # Serbian
+                'mk',  # Macedonian
+                'sq',  # Albanian
+                'bs',  # Bosnian
+                'be',  # Belarusian
+                'uk',  # Ukrainian
+                'ru',  # Russian (sometimes considered European)
+                'tr',  # Turkish (sometimes considered European)
+            ],
             'english': ['en'],
-            'other': ['ar', 'zh', 'ja', 'ko', 'ru', 'hi', 'tr', 'fa', 'th', 'vi', 'he', 'ur', 'bn', 'ta', 'te', 'ml', 'kn']
+            'other': ['ar', 'zh', 'ja', 'ko', 'hi', 'fa', 'th', 'vi', 'he', 'ur', 'bn', 'ta', 'te', 'ml', 'kn']
         }
 
         # ISO 639-3 (3-letter codes)
         self.language_patterns_3 = {
             'nordic': ['swe', 'dan', 'nor', 'fin', 'isl', 'nno', 'nob', 'sme', 'fao'],
-            'european': ['deu', 'fra', 'spa', 'ita', 'nld', 'pol', 'por', 'ron', 'hun', 'ces', 'slk', 'bul', 'hrv', 'slv', 'est', 'lav', 'lit'],
+            'european': [
+                'deu', 'fra', 'spa', 'ita', 'nld', 'pol', 'por', 'ron', 'hun', 'ces', 'slk', 'bul', 'hrv', 'slv', 'est', 'lav', 'lit',
+                'cat',  # Catalan
+                'glg',  # Galician
+                'eus',  # Basque
+                'gle',  # Irish
+                'mlt',  # Maltese
+                'ell',  # Greek
+                'srp',  # Serbian
+                'mkd',  # Macedonian
+                'sqi',  # Albanian
+                'bos',  # Bosnian
+                'bel',  # Belarusian
+                'ukr',  # Ukrainian
+                'rus',  # Russian
+                'tur',  # Turkish
+            ],
             'english': ['eng'],
-            'other': ['ara', 'zho', 'jpn', 'kor', 'rus', 'hin', 'tur', 'fas', 'tha', 'vie', 'heb', 'urd', 'ben', 'tam', 'tel', 'mal', 'kan']
+            'other': ['ara', 'zho', 'jpn', 'kor', 'hin', 'fas', 'tha', 'vie', 'heb', 'urd', 'ben', 'tam', 'tel', 'mal', 'kan']
         }
 
-        # Script codes (for language_Script format)
-        self.script_codes = ['Latn', 'Cyrl', 'Arab', 'Hans', 'Hant', 'Jpan', 'Kore', 'Deva', 'Thai', 'Hebr']
-
-        # Dataset name patterns for fallback detection
-        self.dataset_patterns = {
-            'code': ['github', 'code', 'stack', 'codeparrot', 'bigcode', 'rstar'],
-            'nordic': ['nordic', 'svensk', 'danish', 'norwegian', 'finnish', 'culturax-nord', 'sweden'],
-            'english': ['redpajama', 'gutenberg', 'ultrachat', 'pile', 'wikitext'],
-            'multilingual': ['oscar', 'fineweb', 'c4', 'moscar', 'wikipedia'],
-            'european': ['gutenberg_multilang']
-        }
-
-    def parse_filename(self, filename: str, file_path: str = None) -> tuple:
-        """
-        Parse any parquet filename format and return (dataset_name, subset, language_category, metadata)
-
-        Args:
-            filename: The filename to parse
-            file_path: Optional full path to the file for content-based language detection
-
-        Examples:
-            'HuggingFaceFW_fineweb-2_deu_Latn_0159.parquet'
-            → ('HuggingFaceFW/fineweb-2', 'deu_Latn', 'european', {'file_number': '0159'})
-
-            'codeparrot_github-code-clean_data_train-00012-of-00880.parquet'
-            → ('codeparrot/github-code-clean', None, 'code', {'file_number': '00012', 'total_files': '00880'})
-        """
-
-        # Remove .parquet extension
-        base_name = filename.replace('.parquet', '')
-
-        # Try multiple parsing strategies in order of specificity
-        strategies = [
-            self._parse_complex_train_format,  # train-XXXXX-of-XXXXX format
-            self._parse_huggingface_org_format,  # org_repo_subset_lang_number format
-            self._parse_underscore_format,  # standard underscore separation
-            self._parse_dash_format,  # dash separation
-            self._parse_generic_format  # fallback for any format
-        ]
-
-        for strategy in strategies:
-            result = strategy(base_name)
-            if result:
-                dataset_name, subset, metadata = result
-                # Pass original filename AND file path for intelligent language detection
-                language_category = self._detect_language_category(dataset_name, subset, original_filename=base_name, file_path=file_path)
-                return dataset_name, subset, language_category, metadata
-
-        # Ultimate fallback - use original filename for language detection
-        language_category = self._detect_language_category(base_name, None, original_filename=base_name, file_path=file_path)
-        return base_name, None, language_category, {}
-
-    def _parse_complex_train_format(self, name: str) -> tuple:
-        """Parse: codeparrot_github-code-clean_data_train-00012-of-00880"""
-        import re
-        train_pattern = r'(.+)_data_train-(\d+)-of-(\d+)$'
-        match = re.match(train_pattern, name)
-
-        if match:
-            dataset_part, file_num, total_files = match.groups()
-            # Convert org_repo format
-            dataset_name = dataset_part.replace('_', '/', 1) if '_' in dataset_part else dataset_part
-
-            metadata = {
-                'file_number': file_num,
-                'total_files': total_files,
-                'format': 'train_split'
-            }
-
-            return dataset_name, None, metadata
-
-        return None
-
-    def _parse_huggingface_org_format(self, name: str) -> tuple:
-        """Parse: HuggingFaceFW_fineweb-2_deu_Latn_0159"""
-        import re
-        parts = name.split('_')
-        if len(parts) < 3:
-            return None
-
-        # Common HuggingFace organizations
-        hf_orgs = ['HuggingFaceFW', 'HuggingFaceH4', 'allenai', 'oscar-corpus', 'four-two-labs', 'togethercomputer']
-
-        if parts[0] in hf_orgs and len(parts) >= 3:
-            # Format: org_repo_subset_lang_number
-            org = parts[0]
-            repo = parts[1]
-            remaining = parts[2:]
-
-            dataset_name = f"{org}/{repo}"
-
-            # Extract language codes, file numbers
-            lang_parts = []
-            file_number = None
-
-            for part in remaining:
-                if self._is_language_code(part) or part in self.script_codes:
-                    lang_parts.append(part)
-                elif re.match(r'^\d+[a-zA-Z]*$', part):  # number possibly with suffix
-                    file_number = part
-
-            subset = '_'.join(lang_parts) if lang_parts else None
-            metadata = {'file_number': file_number} if file_number else {}
-
-            return dataset_name, subset, metadata
-
-        return None
-
-    def _parse_underscore_format(self, name: str) -> tuple:
-        """Parse standard underscore-separated format"""
-        import re
+    def parse_filename(self, filename, file_path=None):
+        """Parse filename to extract dataset name, subset, language category, and metadata"""
+        # Remove extensions
+        name = str(filename).replace('.parquet', '').replace('.partial', '')
         parts = name.split('_')
 
         if len(parts) < 2:
-            return None
-
-        # Look for file number (usually at the end)
-        file_number = None
-        content_parts = parts
-
-        if re.match(r'^\d+[a-zA-Z]*$', parts[-1]):
-            file_number = parts[-1]
-            content_parts = parts[:-1]
-
-        # Try to identify org/repo vs single name
-        if len(content_parts) >= 2:
-            # Check if first part looks like org name
-            potential_org = content_parts[0]
-            if any(org_name in potential_org.lower() for org_name in ['hugging', 'allen', 'oscar', 'microsoft', 'together']):
-                dataset_name = f"{content_parts[0]}/{content_parts[1]}"
-                remaining = content_parts[2:]
-            else:
-                # Treat first part as single dataset name
-                dataset_name = content_parts[0]
-                remaining = content_parts[1:]
-        else:
-            dataset_name = content_parts[0]
-            remaining = []
-
-        # Extract language codes from remaining parts
-        lang_parts = [part for part in remaining if self._is_language_code(part) or part in self.script_codes]
-        subset = '_'.join(lang_parts) if lang_parts else None
-
-        metadata = {'file_number': file_number} if file_number else {}
-
-        return dataset_name, subset, metadata
-
-    def _parse_dash_format(self, name: str) -> tuple:
-        """Parse dash-separated format"""
-        # Convert dashes to underscores and reuse underscore parser
-        underscore_name = name.replace('-', '_')
-        return self._parse_underscore_format(underscore_name)
-
-    def _parse_generic_format(self, name: str) -> tuple:
-        """Fallback parser for any remaining format"""
-        import re
-
-        # Extract any numbers (likely file numbers)
-        numbers = re.findall(r'\d+', name)
-        file_number = numbers[-1] if numbers else None
-
-        # Remove numbers to get base name
-        base_name = re.sub(r'_?\d+[a-zA-Z]*$', '', name)
-
-        # Look for language codes anywhere in the name
-        all_parts = re.split(r'[_\-\.]', name)
-        lang_parts = [part for part in all_parts if self._is_language_code(part) or part in self.script_codes]
-
-        subset = '_'.join(lang_parts) if lang_parts else None
-        metadata = {'file_number': file_number} if file_number else {}
-
-        return base_name, subset, metadata
-
-    def _is_language_code(self, code: str) -> bool:
-        """Check if string is a valid language code"""
-        code_lower = code.lower()
-
-        # Check 2-letter codes
-        for lang_list in self.language_patterns_2.values():
-            if code_lower in lang_list:
-                return True
-
-        # Check 3-letter codes
-        for lang_list in self.language_patterns_3.values():
-            if code_lower in lang_list:
-                return True
-
-        return False
-
-    def _detect_language_category(self, dataset_name: str, subset: str, original_filename: str = None, file_path: str = None) -> str:
-        """Intelligent automatic language detection with fallback chain - optimized for training mode"""
-
-        # For training mode, use only fast detection methods (no API calls or content sampling)
-        # This keeps training HPC-friendly and fast
-
-        # Initialize detection context
-        detection_context = {
-            'dataset_name': dataset_name,
-            'subset': subset,
-            'original_filename': original_filename,
-            'file_path': file_path,
-            'methods_tried': [],
-            'detection_results': {}
-        }
-
-        # FAST PATH: Dynamic ISO Code Extraction (training-friendly)
-        try:
-            result = self._detect_via_iso_codes(detection_context)
-            if result != 'unknown':
-                return result
-        except Exception as e:
-            detection_context['methods_tried'].append(f'iso_codes_failed: {str(e)}')
-
-        # Note: HuggingFace API and content sampling are only used in --analyze-ratios mode
-        # This keeps training fast and HPC-compatible
-
-        return 'unknown'
-
-    def _detect_via_huggingface_api(self, context: dict) -> str:
-        """Detect language via HuggingFace dataset metadata API"""
-        try:
-            # Try to import huggingface_hub
-            import requests
-
-            dataset_name = context['dataset_name']
-
-            # Extract potential org/repo from dataset name
-            if '/' in dataset_name:
-                repo_id = dataset_name
-            else:
-                # Try common dataset patterns to construct repo_id
-                potential_repos = [
-                    dataset_name,  # Direct match
-                    f"HuggingFace/{dataset_name}",
-                    f"huggingface/{dataset_name}",
-                    f"{dataset_name.lower()}/{dataset_name.lower()}"
-                ]
-
-                repo_id = None
-                for candidate in potential_repos:
-                    try:
-                        # Quick check if dataset exists
-                        response = requests.head(f"https://huggingface.co/datasets/{candidate}", timeout=2)
-                        if response.status_code == 200:
-                            repo_id = candidate
-                            break
-                    except Exception:
-                        continue
-
-                if not repo_id:
-                    context['methods_tried'].append('huggingface_api: no matching repo found')
-                    return 'unknown'
-
-            # Query dataset metadata
-            try:
-                from huggingface_hub import dataset_info
-                info = dataset_info(repo_id, timeout=3)
-
-                # Extract language information
-                if hasattr(info, 'cardData') and info.cardData:
-                    if hasattr(info.cardData, 'language') and info.cardData.language:
-                        languages = info.cardData.language
-                        if isinstance(languages, list) and languages:
-                            # Map first language to our categories
-                            detected_lang = self._map_language_to_category(languages[0])
-                            if detected_lang != 'unknown':
-                                context['methods_tried'].append(f'huggingface_api: found {languages[0]}')
-                                return detected_lang
-
-                context['methods_tried'].append('huggingface_api: no language metadata')
-                return 'unknown'
-
-            except Exception as e:
-                context['methods_tried'].append(f'huggingface_api: query failed - {str(e)}')
-                return 'unknown'
-
-        except ImportError:
-            context['methods_tried'].append('huggingface_api: huggingface_hub not installed')
-            return 'unknown'
-        except Exception as e:
-            context['methods_tried'].append(f'huggingface_api: error - {str(e)}')
-            return 'unknown'
-
-    def _detect_via_content_sampling(self, context: dict) -> str:
-        """Detect language by sampling actual parquet file content"""
-        try:
-            # Try to import langdetect
-            import pyarrow.parquet as pq
-            from langdetect import LangDetectException, detect
-
-            file_path = context['file_path']
-            if not file_path:
-                context['methods_tried'].append('content_sampling: no file path provided')
-                return 'unknown'
-
-            # Sample content from parquet file
-            try:
-                # Read small sample of the parquet file
-                table = pq.read_table(file_path, columns=None)
-                df = table.to_pandas()
-
-                # Find text columns
-                text_columns = []
-                for col in df.columns:
-                    if df[col].dtype == 'object':  # String columns
-                        # Check if it looks like text content
-                        sample_values = df[col].dropna().head(10)
-                        if len(sample_values) > 0:
-                            avg_length = sample_values.astype(str).str.len().mean()
-                            if avg_length > 20:  # Assume longer strings are text content
-                                text_columns.append(col)
-
-                if not text_columns:
-                    context['methods_tried'].append('content_sampling: no text columns found')
-                    return 'unknown'
-
-                # Sample text content
-                sample_texts = []
-                for col in text_columns[:2]:  # Max 2 text columns
-                    sample_data = df[col].dropna().head(100)  # Sample first 100 rows
-                    for text in sample_data:
-                        if isinstance(text, str) and len(text.strip()) > 50:
-                            sample_texts.append(text.strip()[:500])  # Max 500 chars per sample
-
-                if len(sample_texts) < 5:
-                    context['methods_tried'].append('content_sampling: insufficient text content')
-                    return 'unknown'
-
-                # Combine samples for detection
-                combined_text = ' '.join(sample_texts[:20])  # Max 20 samples
-
-                # Detect language
-                detected_lang_code = detect(combined_text)
-                detected_category = self._map_language_to_category(detected_lang_code)
-
-                context['methods_tried'].append(f'content_sampling: detected {detected_lang_code}')
-                return detected_category
-
-            except Exception as e:
-                context['methods_tried'].append(f'content_sampling: file read error - {str(e)}')
-                return 'unknown'
-
-        except ImportError:
-            context['methods_tried'].append('content_sampling: langdetect not installed')
-            return 'unknown'
-        except LangDetectException as e:
-            context['methods_tried'].append(f'content_sampling: detection failed - {str(e)}')
-            return 'unknown'
-        except Exception as e:
-            context['methods_tried'].append(f'content_sampling: error - {str(e)}')
-            return 'unknown'
-
-    def _detect_via_iso_codes(self, context: dict) -> str:
-        """Extract ISO language codes dynamically from filenames"""
-        import re
-
-        # Combine all available text for analysis
-        texts_to_analyze = [
-            context.get('original_filename', ''),
-            context.get('dataset_name', ''),
-            context.get('subset', '') or ''
-        ]
-
-        full_text = ' '.join(filter(None, texts_to_analyze)).lower()
-
-        # Enhanced regex patterns for language code extraction
-        patterns = [
-            r'([a-z]{2,3})_latn',           # swe_Latn, eng_Latn format
-            r'([a-z]{2,3})_[a-z]{4}',       # any language_Script format
-            r'(?<=[_-])([a-z]{2,3})(?=[_-]|$)',  # 2-3 letter codes after underscore/dash
-            r'^([a-z]{2,3})(?=[_-])',       # 2-3 letter codes at start
-        ]
-
-        detected_codes = []
-        for pattern in patterns:
-            matches = re.findall(pattern, full_text)
-            detected_codes.extend(matches)
-
-        # Filter valid language codes and map to categories
-        for code in detected_codes:
-            if len(code) >= 2 and code not in ['iew', 'thh', 'erg', 'med', 'www', 'com']:  # Filter common false positives
-                category = self._map_language_to_category(code)
-                if category != 'unknown':
-                    context['methods_tried'].append(f'iso_codes: found {code}')
-                    return category
-
-        context['methods_tried'].append('iso_codes: no valid codes found')
-        return 'unknown'
-
-    def _map_language_to_category(self, language_code: str) -> str:
-        """Map ISO language codes to our categories dynamically"""
-        if not language_code:
-            return 'unknown'
-
-        code = language_code.lower().strip()
-
-        # ISO 639-1 and 639-3 mappings (no hardcoding of datasets, just standard language codes)
-        language_mappings = {
-            'nordic': {
-                # ISO 639-1
-                'sv', 'da', 'no', 'fi', 'is',
-                # ISO 639-3
-                'swe', 'dan', 'nor', 'fin', 'isl', 'nno', 'nob', 'sme', 'fao'
-            },
-            'english': {
-                'en', 'eng'
-            },
-            'european': {
-                # Major European languages
-                'de', 'fr', 'es', 'it', 'nl', 'pl', 'pt', 'ro', 'hu', 'cs', 'sk', 'bg', 'hr', 'sl', 'et', 'lv', 'lt',
-                'deu', 'fra', 'spa', 'ita', 'nld', 'pol', 'por', 'ron', 'hun', 'ces', 'slk', 'bul', 'hrv', 'slv', 'est', 'lav', 'lit'
-            },
-            'code': {
-                # This would be detected via content analysis, not language codes
-                # But we can leave this for potential filename patterns
-            }
-        }
-
-        # Check mappings
-        for category, codes in language_mappings.items():
-            if code in codes:
-                return category
-
-        return 'unknown'
-
-    def _extract_language_codes_from_text(self, text: str) -> str:
-        """Extract and categorize language codes from text using regex"""
-        import re
-
-        if not text:
-            return 'unknown'
-
-        text_lower = text.lower()
-
-        # Enhanced regex patterns for language code extraction
-        patterns = [
-            r'([a-z]{2,3})_latn',           # swe_Latn, eng_Latn format
-            r'([a-z]{2,3})_[a-z]{4}',       # any language_Script format
-            r'(?<=[_-])([a-z]{2,3})(?=[_-]|$)',  # 2-3 letter codes after underscore/dash
-            r'^([a-z]{2,3})(?=[_-])',       # 2-3 letter codes at start
-        ]
-
-        detected_codes = []
-        for pattern in patterns:
-            matches = re.findall(pattern, text_lower)
-            detected_codes.extend(matches)
-
-        # Remove duplicates while preserving order
-        seen = set()
-        unique_codes = []
-        for code in detected_codes:
-            if code not in seen and code not in self.script_codes and len(code) >= 2:
-                seen.add(code)
-                unique_codes.append(code)
-
-        # Categorize detected codes
-        for code in unique_codes:
-            # Check 2-letter codes first
+            return None, None, 'unknown', {}
+
+        # Detect language category from filename parts
+        language_category = 'unknown'
+        subset = None
+        metadata = {}
+
+        # Check for language codes in parts
+        for part in parts:
+            # Check 2-letter codes
             for category, codes in self.language_patterns_2.items():
-                if code in codes:
-                    return category
+                if part.lower() in codes:
+                    language_category = category
+                    subset = part
+                    break
 
             # Check 3-letter codes
             for category, codes in self.language_patterns_3.items():
-                if code in codes:
+                if part.lower() in codes:
+                    language_category = category
+                    subset = part
+                    break
+
+            # Check for file numbers
+            if part.isdigit() or (len(part) == 4 and part.isdigit()):
+                metadata['file_number'] = part
+
+        # Extract dataset name (first part or first two parts for org/repo format)
+        if len(parts) >= 2:
+            # Check if first part looks like an organization
+            known_orgs = ['HuggingFaceFW', 'HuggingFaceH4', 'togethercomputer', 'oscar-corpus', 'common-pile']
+            if parts[0] in known_orgs:
+                dataset_name = f"{parts[0]}/{parts[1]}"
+            else:
+                dataset_name = f"{parts[0]}/{parts[1]}" if len(parts) > 1 else parts[0]
+        else:
+            dataset_name = parts[0]
+
+        # Special handling for specific datasets
+        name_lower = name.lower()
+        if any(x in name_lower for x in ['github', 'code', 'arxiv', 'redpajama']):
+            language_category = 'code'
+        elif any(x in name_lower for x in ['swedish', 'gutenberg_multilang', 'biaswb']):
+            language_category = 'nordic' if 'swedish' in name_lower else 'european'
+        elif 'ultrachat' in name_lower or 'gutenberg-en' in name_lower:
+            language_category = 'english'
+
+        return dataset_name, subset, language_category, metadata
+
+    def _detect_via_content_sampling(self, context: dict) -> str:
+        """Memory-efficient language detection by sampling parquet file content"""
+        try:
+            import os
+
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+            from langdetect import LangDetectException, detect
+
+            file_path = context.get('file_path')
+            if not file_path:
+                context['methods_tried'].append('content_sampling_failed: no file path provided')
+                return 'unknown'
+
+            # Step 1: File size pre-check (skip very large files)
+            max_file_size_mb = 500  # Skip files larger than 500MB
+            try:
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                if file_size_mb > max_file_size_mb:
+                    context['methods_tried'].append(f'content_sampling_skipped: file too large ({file_size_mb:.1f}MB > {max_file_size_mb}MB)')
+                    return 'unknown'
+            except OSError:
+                context['methods_tried'].append('content_sampling_failed: cannot access file')
+                return 'unknown'
+
+            # Step 2: Schema inspection to find text columns
+            parquet_file = pq.ParquetFile(file_path)
+            schema = parquet_file.schema
+
+            # Identify likely text columns from schema
+            text_columns = []
+            priority_names = ['text', 'content', 'message', 'body', 'description', 'title', 'summary', 'sentence']
+
+            for _i, field in enumerate(schema):
+                field_name = field.name.lower()
+                # Include string columns that are likely text
+                logical_type = field.logical_type
+                physical_type = field.physical_type
+
+                # Check for string types using correct PyArrow API
+                is_string_type = (
+                    str(logical_type) == 'String' or
+                    str(logical_type) == 'LargeString' or
+                    (str(physical_type) == 'BYTE_ARRAY' and any(name in field_name for name in priority_names))
+                )
+
+                if is_string_type:
+                    text_columns.append(field.name)
+
+            # Prioritize columns with text-like names
+            text_columns.sort(key=lambda x: (
+                0 if any(name in x.lower() for name in priority_names) else 1,
+                len(x)  # Shorter names first
+            ))
+
+            # Limit to maximum 5 text columns to control memory
+            text_columns = text_columns[:5]
+
+            if not text_columns:
+                context['methods_tried'].append('content_sampling_failed: no text columns found in schema')
+                return 'unknown'
+
+            # Step 3: Memory-efficient limited reading
+            max_rows = 100  # Strict row limit
+            try:
+                # Use read_table with strict limits
+                table = pq.read_table(
+                    file_path,
+                    columns=text_columns,  # Only read text columns
+                    # Note: PyArrow doesn't have nrows parameter, so we'll slice after reading
+                )
+
+                # Slice to limit rows (more memory efficient than reading all then slicing)
+                if table.num_rows > max_rows:
+                    table = table.slice(0, max_rows)
+
+                # Convert to pandas with only the data we need
+                df = table.to_pandas()
+
+            except pa.ArrowMemoryError:
+                context['methods_tried'].append('content_sampling_failed: Arrow memory error during read')
+                return 'unknown'
+            except MemoryError:
+                context['methods_tried'].append('content_sampling_failed: system memory error during read')
+                return 'unknown'
+            except Exception as e:
+                if 'memory' in str(e).lower() or 'allocation' in str(e).lower():
+                    context['methods_tried'].append(f'content_sampling_failed: memory error - {str(e)[:100]}')
+                    return 'unknown'
+                raise  # Re-raise non-memory errors
+
+            # Step 4: Memory-efficient text extraction
+            text_content = ""
+            max_chars_per_column = 500  # Limit characters from each column
+
+            for col in df.columns:
+                try:
+                    # Get non-null values and convert to string efficiently
+                    col_data = df[col].dropna()
+                    if len(col_data) > 0:
+                        # Take only first 10 entries and limit character length
+                        sample_texts = col_data.head(10).astype(str)
+                        col_text = " ".join(sample_texts)[:max_chars_per_column]
+                        text_content += col_text + " "
+
+                        # Early exit if we have enough text
+                        if len(text_content) >= 1000:
+                            break
+                except Exception:
+                    continue  # Skip problematic columns
+
+            # Capture row count before cleanup
+            num_rows = len(df) if 'df' in locals() and df is not None else 0
+
+            # Clean up large objects
+            del df, table
+
+            if len(text_content.strip()) < 50:
+                context['methods_tried'].append('content_sampling_failed: insufficient text content extracted')
+                return 'unknown'
+
+            # Step 5: Language detection with memory efficiency
+            # Limit text for detection to avoid memory issues in langdetect
+            detection_text = text_content[:1000].strip()
+            detected_lang = detect(detection_text)
+
+            # Map detected language to categories
+            lang_mapping = {
+                'sv': 'nordic', 'da': 'nordic', 'no': 'nordic', 'fi': 'nordic', 'is': 'nordic',
+                'en': 'english',
+                'de': 'european', 'fr': 'european', 'es': 'european', 'it': 'european',
+                'nl': 'european', 'pl': 'european', 'pt': 'european', 'ro': 'european',
+                'hu': 'european', 'cs': 'european', 'sk': 'european', 'bg': 'european',
+                'hr': 'european', 'sl': 'european', 'et': 'european', 'lv': 'european', 'lt': 'european'
+            }
+
+            category = lang_mapping.get(detected_lang, 'other')
+            context['methods_tried'].append(f'content_sampling_success: {len(text_columns)} cols, {num_rows} rows, detected {detected_lang} -> {category}')
+            return category
+
+        except ImportError:
+            context['methods_tried'].append('content_sampling_failed: missing dependencies (pyarrow, langdetect)')
+            return 'unknown'
+        except LangDetectException:
+            context['methods_tried'].append('content_sampling_failed: language detection failed on extracted text')
+            return 'unknown'
+        except MemoryError:
+            context['methods_tried'].append('content_sampling_failed: system memory exhausted')
+            return 'unknown'
+        except Exception as e:
+            # Catch any remaining errors gracefully
+            error_msg = str(e)[:100]  # Limit error message length
+            context['methods_tried'].append(f'content_sampling_failed: {error_msg}')
+            return 'unknown'
+
+    def _detect_via_iso_codes(self, context: dict) -> str:
+        """Extract and detect language from ISO codes in filename"""
+        try:
+            dataset_name = context.get('dataset_name', '')
+            subset = context.get('subset', '')
+            filename = context.get('original_filename', '')
+
+            # Combine all sources for code detection
+            search_text = f"{dataset_name} {subset} {filename}".lower()
+
+            # Check for 2-letter codes
+            for category, codes in self.language_patterns_2.items():
+                for code in codes:
+                    if code in search_text:
+                        context['methods_tried'].append(f'iso_codes_success: found {code} -> {category}')
+                        return category
+
+            # Check for 3-letter codes
+            for category, codes in self.language_patterns_3.items():
+                for code in codes:
+                    if code in search_text:
+                        context['methods_tried'].append(f'iso_codes_success: found {code} -> {category}')
+                        return category
+
+            # Check for script codes (like Latn)
+            script_patterns = {
+                'latn': 'european',  # Latin script - assume European if not already categorized
+                'cyrl': 'european',  # Cyrillic script
+            }
+
+            for script, category in script_patterns.items():
+                if script in search_text:
+                    context['methods_tried'].append(f'iso_codes_success: found script {script} -> {category}')
                     return category
 
-        return 'unknown'
+            context['methods_tried'].append('iso_codes_failed: no ISO codes found')
+            return 'unknown'
+
+        except Exception as e:
+            context['methods_tried'].append(f'iso_codes_failed: {str(e)}')
+            return 'unknown'
 
 
 class DynamicRatioCalculator:
@@ -657,25 +473,31 @@ class DynamicRatioCalculator:
     def _calculate_optimal_sampling(self, dataset_inventory: dict,
                                   available_by_language: dict,
                                   target_by_language: dict) -> dict:
-        """Calculate optimal per-dataset sampling ratios"""
+        """Calculate optimal per-dataset sampling ratios to enforce user-defined language ratios"""
         sampling_plan = {}
+        warnings = []
 
         for language, target_gb in target_by_language.items():
             if language not in available_by_language:
                 logger.warning(f"No data available for language category: {language}")
+                warnings.append(f"No data available for {language} (target: {target_gb:.1f}GB)")
                 continue
 
             available_gb = available_by_language[language]['total_gb']
 
-            # Calculate language-level sampling ratio
-            if available_gb <= target_gb:
-                # Use all available data for this language
-                lang_sampling_ratio = 1.0
-                logger.info(f"Using all {available_gb:.1f}GB available for {language} (target: {target_gb:.1f}GB)")
+            # ALWAYS calculate sampling ratio - no exceptions
+            lang_sampling_ratio = target_gb / available_gb
+
+            if lang_sampling_ratio <= 1.0:
+                # Over-represented language: sample down to exact target
+                logger.info(f"{language.upper()}: {available_gb:.1f}GB available -> {target_gb:.1f}GB target (sampling {lang_sampling_ratio:.3f}x)")
             else:
-                # Need to sample down
-                lang_sampling_ratio = target_gb / available_gb
-                logger.info(f"Sampling {lang_sampling_ratio:.3f} of {language} data ({target_gb:.1f}GB from {available_gb:.1f}GB)")
+                # Under-represented language: use all available + warning
+                lang_sampling_ratio = 1.0
+                shortage_gb = target_gb - available_gb
+                warning_msg = f"{language.upper()}: Only {available_gb:.1f}GB available but {target_gb:.1f}GB requested (shortage: {shortage_gb:.1f}GB)"
+                logger.warning(warning_msg)
+                warnings.append(f"{language}: {available_gb:.1f}GB available < {target_gb:.1f}GB requested")
 
             # Apply this ratio to all datasets in this language
             for (_dataset, _subset), info in dataset_inventory.items():
@@ -690,12 +512,17 @@ class DynamicRatioCalculator:
                         'files': info['files']
                     }
 
+        # Store warnings in the sampling plan for later reporting
+        sampling_plan['_warnings'] = warnings
         return sampling_plan
 
     def _validate_and_adjust(self, sampling_plan: dict, target_total_gb: float) -> dict:
         """Validate total doesn't exceed target, adjust if needed"""
-        # Calculate actual total
-        actual_total_gb = sum(plan['target_gb'] for plan in sampling_plan.values())
+        # Extract warnings before validation
+        warnings = sampling_plan.pop('_warnings', [])
+
+        # Calculate actual total from sampling plan (excluding warnings)
+        actual_total_gb = sum(plan['target_gb'] for key, plan in sampling_plan.items() if isinstance(plan, dict) and 'target_gb' in plan)
 
         logger.info(f"Planned total: {actual_total_gb:.1f}GB, Target: {target_total_gb:.1f}GB")
 
@@ -705,12 +532,18 @@ class DynamicRatioCalculator:
             logger.info(f"Applying final scale factor: {scale_factor:.3f} to fit target")
 
             for _key, plan in sampling_plan.items():
-                plan['sampling_ratio'] *= scale_factor
-                plan['target_gb'] *= scale_factor
-                plan['target_files'] = max(1, int(plan['target_files'] * scale_factor))
-                plan['scaled'] = True
+                if isinstance(plan, dict) and 'target_gb' in plan:
+                    plan['sampling_ratio'] *= scale_factor
+                    plan['target_gb'] *= scale_factor
+                    plan['target_files'] = max(1, int(plan['target_files'] * scale_factor))
+                    plan['scaled'] = True
         else:
             logger.info("No additional scaling needed")
+
+        # Re-add warnings to the final plan
+        if warnings:
+            sampling_plan['_warnings'] = warnings
+            logger.info(f"Language ratio warnings: {len(warnings)} language(s) have insufficient data")
 
         return sampling_plan
 
@@ -722,7 +555,7 @@ class DatasetCompositionAnalyzer:
         self.filename_parser = UniversalFilenameParser()
 
     def _detect_language_for_analysis(self, dataset_name: str, subset: str, original_filename: str = None, file_path: str = None) -> str:
-        """Full intelligent language detection for analysis mode - includes API calls and content sampling"""
+        """Language detection for analysis mode - content sampling and ISO code extraction only (no API calls)"""
 
         # Initialize detection context
         detection_context = {
@@ -734,17 +567,7 @@ class DatasetCompositionAnalyzer:
             'detection_results': {}
         }
 
-        # Full Automatic Fallback Chain (used only in analysis mode)
-
-        # 1. PRIMARY: HuggingFace API Metadata Query (fast, authoritative)
-        try:
-            result = self.filename_parser._detect_via_huggingface_api(detection_context)
-            if result != 'unknown':
-                return result
-        except Exception as e:
-            detection_context['methods_tried'].append(f'huggingface_api_failed: {str(e)}')
-
-        # 2. SECONDARY: Content Sampling + Language Detection (accurate)
+        # 1. Content Sampling + Language Detection (accurate)
         if file_path:
             try:
                 result = self.filename_parser._detect_via_content_sampling(detection_context)
@@ -753,7 +576,7 @@ class DatasetCompositionAnalyzer:
             except Exception as e:
                 detection_context['methods_tried'].append(f'content_sampling_failed: {str(e)}')
 
-        # 3. TERTIARY: Dynamic ISO Code Extraction (fast fallback)
+        # 2. Dynamic ISO Code Extraction (fast fallback)
         try:
             result = self.filename_parser._detect_via_iso_codes(detection_context)
             if result != 'unknown':
@@ -761,13 +584,14 @@ class DatasetCompositionAnalyzer:
         except Exception as e:
             detection_context['methods_tried'].append(f'iso_codes_failed: {str(e)}')
 
-        # 4. LAST RESORT: Log what was tried and return unknown
+        # 3. LAST RESORT: Log what was tried and return unknown
         logger.debug(f"Language detection failed for {original_filename or dataset_name}. Tried: {detection_context['methods_tried']}")
         return 'unknown'
 
     def analyze_available_data(self, datasets_dir: str) -> dict:
         """
-        Analyze what data is actually available in the datasets directory.
+        Memory-efficient analysis of available data with intelligent sampling.
+        Uses representative sampling to avoid OOM with huge datasets.
 
         Returns:
             dict: {
@@ -781,7 +605,12 @@ class DatasetCompositionAnalyzer:
                     }
                 },
                 'datasets': [list of all datasets found],
-                'warnings': [list of warnings/issues]
+                'warnings': [list of warnings/issues],
+                'sampling_info': {
+                    'total_files': int,
+                    'analyzed_files': int,
+                    'sampling_used': bool
+                }
             }
         """
         from pathlib import Path
@@ -794,22 +623,71 @@ class DatasetCompositionAnalyzer:
         if not parquet_files:
             return {'error': f"No parquet files found in: {datasets_dir}"}
 
-        # Build inventory using existing logic
+        total_files = len(parquet_files)
+        logger.info(f"Found {total_files} parquet files for analysis")
+
+        # Memory-efficient sampling strategy
+        max_files_to_analyze = 500  # Reasonable limit to prevent OOM
+        sampling_used = total_files > max_files_to_analyze
+
+        if sampling_used:
+            # Intelligent sampling: take files from different size ranges
+            file_sizes = [(f, f.stat().st_size) for f in parquet_files]
+            file_sizes.sort(key=lambda x: x[1])  # Sort by size
+
+            # Sample from different quartiles to get representative data
+            step = len(file_sizes) // max_files_to_analyze
+            sampled_files = [file_sizes[i][0] for i in range(0, len(file_sizes), max(1, step))]
+            sampled_files = sampled_files[:max_files_to_analyze]
+
+            logger.info(f"Using intelligent sampling: analyzing {len(sampled_files)}/{total_files} files")
+            files_to_process = sampled_files
+        else:
+            files_to_process = parquet_files
+
+        # Build inventory using memory-efficient processing
         total_size_gb = 0
         languages = {}
         datasets_found = set()
         warnings = []
+        processed_count = 0
+        memory_checks = 0
 
-        for file_path in parquet_files:
+        for file_path in files_to_process:
             try:
-                # Use basic filename parsing first
+                # Memory monitoring every 50 files
+                if processed_count % 50 == 0 and processed_count > 0:
+                    memory_usage = get_memory_usage_percent()
+                    if memory_usage > 80:
+                        logger.warning(f"High memory usage during analysis: {memory_usage:.1f}% (processed {processed_count}/{len(files_to_process)} files)")
+                        gc.collect()  # Force garbage collection
+                        memory_checks += 1
+
+                        # Emergency exit if memory remains high
+                        if memory_checks > 3 and memory_usage > 85:
+                            warnings.append(f"Analysis stopped early due to memory pressure (processed {processed_count}/{len(files_to_process)} files)")
+                            break
+
+                # Use basic filename parsing first (fast, no file I/O)
                 dataset_name, subset, _, metadata = self.filename_parser.parse_filename(file_path.name)
 
-                # Then use full analysis detection (includes API calls and content sampling)
-                language_category = self._detect_language_for_analysis(dataset_name, subset, file_path.name, str(file_path))
+                # Use the full language detection (which includes filename + content sampling as fallback)
+                try:
+                    language_category = self._detect_language_for_analysis(
+                        dataset_name, subset, file_path.name, str(file_path)
+                    )
+                except Exception as e:
+                    language_category = 'other'
+                    warnings.append(f"Language detection failed for {file_path.name}: {str(e)[:100]}")
 
                 # Get file size
                 file_size_gb = file_path.stat().st_size / (1024**3)
+
+                # If sampling, scale up the size to estimate total
+                if sampling_used:
+                    scale_factor = total_files / len(files_to_process)
+                    file_size_gb *= scale_factor
+
                 total_size_gb += file_size_gb
 
                 # Track dataset
@@ -826,21 +704,38 @@ class DatasetCompositionAnalyzer:
 
                 languages[language_category]['size_gb'] += file_size_gb
                 languages[language_category]['datasets'].add(dataset_name)
-                languages[language_category]['file_count'] += 1
+                languages[language_category]['file_count'] += (scale_factor if sampling_used else 1)
+
+                processed_count += 1
+
+                # Periodic cleanup and progress logging
+                if processed_count % 100 == 0:
+                    gc.collect()
+                    logger.info(f"Analysis progress: {processed_count}/{len(files_to_process)} files processed")
 
             except Exception as e:
-                warnings.append(f"Could not process {file_path.name}: {e}")
+                warnings.append(f"Could not process {file_path.name}: {str(e)[:100]}")
+                continue
 
         # Calculate percentages
         for lang_info in languages.values():
             lang_info['percentage'] = (lang_info['size_gb'] / total_size_gb) * 100 if total_size_gb > 0 else 0
             lang_info['datasets'] = list(lang_info['datasets'])  # Convert set to list
+            lang_info['file_count'] = int(lang_info['file_count'])  # Ensure integer
+
+        # Final cleanup
+        gc.collect()
 
         return {
             'total_size_gb': total_size_gb,
             'languages': languages,
             'datasets': list(datasets_found),
-            'warnings': warnings
+            'warnings': warnings,
+            'sampling_info': {
+                'total_files': total_files,
+                'analyzed_files': processed_count,
+                'sampling_used': sampling_used
+            }
         }
 
     def validate_user_ratios(self, analysis: dict, user_language_ratios: dict) -> dict:
@@ -921,6 +816,14 @@ class DatasetCompositionAnalyzer:
 
         logger.info("📊 DATASET COMPOSITION ANALYSIS")
         logger.info("=" * 80)
+
+        # Show sampling info if available
+        if 'sampling_info' in analysis:
+            sampling_info = analysis['sampling_info']
+            if sampling_info['sampling_used']:
+                logger.info(f"🎯 Sampling: {sampling_info['analyzed_files']}/{sampling_info['total_files']} files analyzed (intelligent sampling used)")
+            else:
+                logger.info(f"📋 Analysis: {sampling_info['analyzed_files']} files analyzed (complete)")
 
         # Overall stats
         logger.info(f"📁 Total Data: {analysis['total_size_gb']:.2f}GB")
@@ -1318,7 +1221,11 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
         }
 
     logger.info("=== DYNAMIC RATIO CALCULATION ===")
-    logger.info(f"Target: {target_data_gb:.1f}GB with ratios {user_language_ratios}")
+    # Check if we're using the total available data (when target equals discovered total)
+    if abs(target_data_gb - total_discovered_gb) < 0.1:  # Within 0.1GB tolerance
+        logger.info(f"Target: ALL available data ({total_discovered_gb:.1f}GB) with ratios {user_language_ratios}")
+    else:
+        logger.info(f"Target: {target_data_gb:.1f}GB with ratios {user_language_ratios}")
 
     calculator = DynamicRatioCalculator()
     sampling_plan = calculator.calculate_sampling_strategy(
@@ -1329,19 +1236,31 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
 
     # STEP 3: APPLY SAMPLING BASED ON CALCULATED RATIOS
     logger.info("=== APPLYING DYNAMIC SAMPLING ===")
+
+    # Extract and display warnings first
+    warnings = sampling_plan.pop('_warnings', [])
+    if warnings:
+        logger.warning("RATIO ENFORCEMENT WARNINGS:")
+        for warning in warnings:
+            logger.warning(f"  - {warning}")
+
     random.seed(42)  # Reproducible sampling
 
     final_files = {}
     total_sampled_gb = 0.0
 
     for (dataset, subset), plan in sampling_plan.items():
+        # Skip non-plan entries
+        if not isinstance(plan, dict) or 'files' not in plan:
+            continue
+
         available_files = plan['files']
         target_files = plan['target_files']
 
         # Apply sampling
         if target_files < len(available_files):
             sampled_files = random.sample(available_files, target_files)
-            logger.info(f"Sampled {dataset}" + (f" ({subset})" if subset else "") + f": {len(available_files)} → {target_files} files ({plan['sampling_ratio']:.3f} ratio)")
+            logger.info(f"Sampled {dataset}" + (f" ({subset})" if subset else "") + f": {len(available_files)} -> {target_files} files ({plan['sampling_ratio']:.3f} ratio)")
         else:
             sampled_files = available_files
 
@@ -1354,7 +1273,11 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
 
         total_sampled_gb += plan['target_gb']
 
-    logger.info(f"Total sampled: {total_sampled_gb:.1f}GB (target: {target_data_gb:.1f}GB)")
+    # Check if we're using all available data
+    if abs(target_data_gb - total_discovered_gb) < 0.1:  # Within 0.1GB tolerance
+        logger.info(f"Total sampled: {total_sampled_gb:.1f}GB (target: ALL available data)")
+    else:
+        logger.info(f"Total sampled: {total_sampled_gb:.1f}GB (target: {target_data_gb:.1f}GB)")
 
     # STEP 4: CONVERT TO LEGACY FORMAT
     grouped_files = {}
@@ -1454,7 +1377,7 @@ def load_all_datasets(
     max_workers=32,
     streaming=True,
     slurm_logging=False,
-    target_data_gb=1500,
+    target_data_gb=None,
     disable_sampling=False,
     user_language_ratios=None,
 ):
@@ -1468,9 +1391,28 @@ def load_all_datasets(
     # Discover local parquet files with intelligent sampling
     logger.info("Discovering local parquet files...")
 
+    # Handle unlimited data case
+    if target_data_gb is None:
+        logger.info("🚀 No data size limit - calculating total available data for ratio application")
+        # Calculate actual total data size for ratio calculations
+        from pathlib import Path
+        datasets_path = Path("./datasets")
+        if datasets_path.exists():
+            parquet_files = list(datasets_path.glob("*.parquet"))
+            total_available_gb = sum(f.stat().st_size for f in parquet_files) / (1024**3)
+            logger.info(f"📊 Total available data: {total_available_gb:.1f}GB - will apply ratios to this amount")
+            effective_target_gb = total_available_gb  # Use actual total for ratio calculations
+        else:
+            logger.warning("No datasets directory found - using fallback ratio calculation")
+            effective_target_gb = 1500  # Fallback if no data found
+        effective_sampling = not disable_sampling  # Enable sampling for ratio application
+    else:
+        effective_sampling = not disable_sampling
+        effective_target_gb = target_data_gb
+
     local_files = discover_local_parquet_files(
-        target_data_gb=target_data_gb,
-        enable_sampling=not disable_sampling,
+        target_data_gb=effective_target_gb,
+        enable_sampling=effective_sampling,
         user_language_ratios=user_language_ratios
     )
 
@@ -1748,7 +1690,7 @@ def train_tokenizer(
     max_workers,
     streaming=True,
     slurm_logging=False,
-    target_data_gb=1500,
+    target_data_gb=None,
     disable_sampling=False,
     user_language_ratios=None,
 ):
@@ -1894,15 +1836,14 @@ def save_tokenizer_config(tokenizer_dir, vocab_size, embedding_dim):
 )
 @click.option(
     "--slurm-logging",
-    is_flag=True,
+       is_flag=True,
     default=False,
     help="Enable periodic time-based logging for Slurm job monitoring",
 )
 @click.option(
     "--target-data-size",
-    default="1500GB",
-    show_default=True,
-    help="Target total data size (e.g., 500MB, 1.5GB, 2TB, 2.5TB)",
+    default=None,
+    help="Target total data size (e.g., 500MB, 1.5GB, 2TB, 2.5TB). If not specified, uses ALL available data.",
 )
 @click.option(
     "--disable-sampling",
@@ -1978,12 +1919,16 @@ def main(
     )
 
     # Parse target data size with unit support
-    try:
-        target_data_gb = parse_data_size(target_data_size)
-        logger.info(f"Target data size: {target_data_size} ({target_data_gb}GB)")
-    except ValueError as e:
-        logger.error(f"Invalid target data size: {e}")
-        sys.exit(1)
+    if target_data_size is None:
+        target_data_gb = None
+        logger.info("🚀 Using ALL available data (no size limit specified)")
+    else:
+        try:
+            target_data_gb = parse_data_size(target_data_size)
+            logger.info(f"🎯 Target data size: {target_data_size} ({target_data_gb}GB)")
+        except ValueError as e:
+            logger.error(f"Invalid target data size: {e}")
+            sys.exit(1)
 
     # Handle analyze-ratios mode
     if analyze_ratios:
@@ -2000,7 +1945,8 @@ def main(
         # Suggest example ratios based on available data
         if 'languages' in analysis:
             total_gb = analysis['total_size_gb']
-            logger.info(f"   python {sys.argv[0]} --target-data-size {target_data_size} \\")
+            example_target = f"{total_gb:.0f}GB" if target_data_size is None else target_data_size
+            logger.info(f"   python {sys.argv[0]} --target-data-size {example_target} \\")
             for lang, info in sorted(analysis['languages'].items(), key=lambda x: x[1]['size_gb'], reverse=True):
                 suggested_ratio = min(0.40, info['percentage'] / 100 * 1.5)  # Cap at 40%, scale by 1.5x
                 if suggested_ratio >= 0.05:  # Only show if >= 5%
@@ -2030,6 +1976,7 @@ def main(
                    f"English={english_ratio:.1%}, Code={code_ratio:.1%}, Other={other_ratio:.1%}")
     except ValueError as e:
         logger.error(f"Invalid language ratios: {e}")
+
         sys.exit(1)
 
     logger.info(f"Using max_workers={max_workers} for datasets multiprocessing")
