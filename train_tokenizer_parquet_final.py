@@ -626,24 +626,55 @@ class DatasetCompositionAnalyzer:
         total_files = len(parquet_files)
         logger.info(f"Found {total_files} parquet files for analysis")
 
-        # Memory-efficient sampling strategy
-        max_files_to_analyze = 500  # Reasonable limit to prevent OOM
-        sampling_used = total_files > max_files_to_analyze
+        # Dataset-aware sampling strategy for better language representation
+        max_files_per_dataset = 100  # Sample files per dataset for better language diversity
 
-        if sampling_used:
-            # Intelligent sampling: take files from different size ranges
-            file_sizes = [(f, f.stat().st_size) for f in parquet_files]
-            file_sizes.sort(key=lambda x: x[1])  # Sort by size
+        # Group files by dataset
+        files_by_dataset = {}
+        for f in parquet_files:
+            dataset_name, _, _, _ = self.filename_parser.parse_filename(f.name)
+            if dataset_name not in files_by_dataset:
+                files_by_dataset[dataset_name] = []
+            files_by_dataset[dataset_name].append(f)
 
-            # Sample from different quartiles to get representative data
-            step = len(file_sizes) // max_files_to_analyze
-            sampled_files = [file_sizes[i][0] for i in range(0, len(file_sizes), max(1, step))]
-            sampled_files = sampled_files[:max_files_to_analyze]
+        # Sample up to max_files_per_dataset from each dataset
+        sampled_files = []
+        dataset_sampling_info = {}
 
-            logger.info(f"Using intelligent sampling: analyzing {len(sampled_files)}/{total_files} files")
-            files_to_process = sampled_files
-        else:
-            files_to_process = parquet_files
+        for dataset_name, dataset_files in files_by_dataset.items():
+            if len(dataset_files) <= max_files_per_dataset:
+                # Use all files if dataset has fewer than max
+                dataset_sample = dataset_files
+                sampling_used_for_dataset = False
+            else:
+                # Intelligent sampling within dataset: take files from different size ranges
+                file_sizes = [(f, f.stat().st_size) for f in dataset_files]
+                file_sizes.sort(key=lambda x: x[1])  # Sort by size
+
+                # Sample from different quartiles to get representative data
+                step = len(file_sizes) // max_files_per_dataset
+                dataset_sample = [file_sizes[i][0] for i in range(0, len(file_sizes), max(1, step))]
+                dataset_sample = dataset_sample[:max_files_per_dataset]
+                sampling_used_for_dataset = True
+
+            sampled_files.extend(dataset_sample)
+            dataset_sampling_info[dataset_name] = {
+                'total_files': len(dataset_files),
+                'sampled_files': len(dataset_sample),
+                'sampling_used': sampling_used_for_dataset
+            }
+
+        # Overall sampling status
+        sampling_used = any(info['sampling_used'] for info in dataset_sampling_info.values())
+
+        logger.info(f"Dataset-aware sampling: {len(files_by_dataset)} datasets, analyzing {len(sampled_files)}/{total_files} files total")
+        for dataset_name, info in dataset_sampling_info.items():
+            if info['sampling_used']:
+                logger.info(f"  {dataset_name}: {info['sampled_files']}/{info['total_files']} files (sampled)")
+            else:
+                logger.info(f"  {dataset_name}: {info['sampled_files']}/{info['total_files']} files (all)")
+
+        files_to_process = sampled_files
 
         # Build inventory using memory-efficient processing
         total_size_gb = 0
@@ -683,10 +714,13 @@ class DatasetCompositionAnalyzer:
                 # Get file size
                 file_size_gb = file_path.stat().st_size / (1024**3)
 
-                # If sampling, scale up the size to estimate total
+                # If sampling, scale up the size to estimate total (dataset-aware scaling)
                 if sampling_used:
-                    scale_factor = total_files / len(files_to_process)
-                    file_size_gb *= scale_factor
+                    # Find which dataset this file belongs to and get its specific scale factor
+                    dataset_info = dataset_sampling_info[dataset_name]
+                    if dataset_info['sampling_used']:
+                        dataset_scale_factor = dataset_info['total_files'] / dataset_info['sampled_files']
+                        file_size_gb *= dataset_scale_factor
 
                 total_size_gb += file_size_gb
 
@@ -704,7 +738,17 @@ class DatasetCompositionAnalyzer:
 
                 languages[language_category]['size_gb'] += file_size_gb
                 languages[language_category]['datasets'].add(dataset_name)
-                languages[language_category]['file_count'] += (scale_factor if sampling_used else 1)
+
+                # Update file count with dataset-specific scaling
+                if sampling_used:
+                    dataset_info = dataset_sampling_info[dataset_name]
+                    if dataset_info['sampling_used']:
+                        dataset_scale_factor = dataset_info['total_files'] / dataset_info['sampled_files']
+                        languages[language_category]['file_count'] += dataset_scale_factor
+                    else:
+                        languages[language_category]['file_count'] += 1
+                else:
+                    languages[language_category]['file_count'] += 1
 
                 processed_count += 1
 
@@ -1228,8 +1272,12 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
     for file_path in parquet_files:
         filename = file_path.name
 
-        # Parse filename with new universal parser and file path for intelligent detection
-        dataset_name, subset, language_category, metadata = parser.parse_filename(filename, str(file_path))
+        # Parse filename to get basic info, then use analyze-ratios detection for consistency
+        dataset_name, subset, _, metadata = parser.parse_filename(filename)
+
+        # Use the same language detection as analyze-ratios mode for consistency
+        analyzer = DatasetCompositionAnalyzer()
+        language_category = analyzer._detect_language_for_analysis(dataset_name, subset, filename, str(file_path))
 
         # Calculate file size
         file_size_gb = file_path.stat().st_size / (1024**3)
@@ -1290,26 +1338,26 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
         user_language_ratios
     )
 
-    # STEP 3: APPLY CATEGORY-LEVEL SHUFFLING FOR MEMORY SAFETY AND DATA QUALITY  
+    # STEP 3: APPLY CATEGORY-LEVEL SHUFFLING FOR MEMORY SAFETY AND DATA QUALITY
     logger.info("=== APPLYING CATEGORY-LEVEL SHUFFLING ===")
-    
+
     # Group all files by language category with shuffling
     files_by_category = {}
     category_info = {}
-    
+
     for key, plan in sampling_plan.items():
         # Skip non-dataset entries like '_warnings'
         if not isinstance(key, tuple) or len(key) != 2:
             continue
         if not isinstance(plan, dict) or 'files' not in plan:
             continue
-            
+
         dataset, subset = key
-            
+
         language = plan['language']
         files = plan['files']
         sampling_ratio = plan['sampling_ratio']
-        
+
         if language not in files_by_category:
             files_by_category[language] = []
             category_info[language] = {
@@ -1317,23 +1365,23 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
                 'sampling_ratio': sampling_ratio,
                 'datasets': []
             }
-            
+
         files_by_category[language].extend(files)
         category_info[language]['total_files'] += len(files)
         category_info[language]['datasets'].append(f"{dataset}" + (f"/{subset}" if subset else ""))
-    
+
     # Apply category-level sampling with shuffling for data quality
     random.seed(42)  # Reproducible sampling
     selected_files_by_category = {}
-    
+
     for language, all_files in files_by_category.items():
         if not all_files:
             continue
-            
+
         info = category_info[language]
         total_files = len(all_files)
         sampling_ratio = info['sampling_ratio']
-        
+
         if sampling_ratio >= 1.0:
             # Use all files - insufficient data case
             selected_files = all_files
@@ -1344,16 +1392,16 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
             random.shuffle(all_files)  # Shuffle for cross-dataset mixing
             selected_files = all_files[:target_file_count]
             logger.info(f"Category {language.upper()}: Sampled {len(selected_files)}/{total_files} files (ratio: {sampling_ratio:.3f})")
-            
+
         selected_files_by_category[language] = selected_files
-    
+
     # Update sampling_plan to only include files that were selected at category level
     # This ensures memory safety by filtering out unselected files
     updated_sampling_plan = {}
     selected_files_set = set()
     for files_list in selected_files_by_category.values():
         selected_files_set.update(files_list)
-    
+
     for key, plan in sampling_plan.items():
         # Handle special entries like '_warnings'
         if not isinstance(key, tuple) or len(key) != 2:
@@ -1362,13 +1410,13 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
             continue
         if not isinstance(plan, dict) or 'files' not in plan:
             continue
-            
+
         dataset, subset = key
-            
+
         # Filter files to only include selected ones
         original_files = plan['files']
         filtered_files = [f for f in original_files if f in selected_files_set]
-        
+
         if filtered_files:  # Only keep datasets that have selected files
             updated_plan = plan.copy()
             updated_plan['files'] = filtered_files
@@ -1377,10 +1425,10 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
                 file_ratio = len(filtered_files) / len(original_files)
                 updated_plan['target_gb'] = plan['target_gb'] * file_ratio
             updated_sampling_plan[(dataset, subset)] = updated_plan
-    
+
     # Replace sampling_plan with filtered version for memory safety
     sampling_plan = updated_sampling_plan
-    
+
     # Log memory safety summary
     total_selected_files = sum(len(files) for files in selected_files_by_category.values())
     total_original_files = sum(len(files) for files in files_by_category.values())
@@ -1412,8 +1460,7 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
         # Skip additional size-based sampling to avoid double-sampling
         sampled_files = available_files
         actual_gb_sampled = sum(os.path.getsize(f) for f in available_files) / (1024**3)
-        target_gb_for_dataset = plan['target_gb']
-        
+
         logger.info(f"Using pre-selected {dataset}" + (f" ({subset})" if subset else "") + f": {len(sampled_files)} files ({actual_gb_sampled:.2f}GB from category-level selection)")
 
         # Store in final structure
@@ -2050,7 +2097,7 @@ def save_tokenizer_config(tokenizer_dir, vocab_size, embedding_dim):
 )
 @click.option(
     "--code-ratio",
-    default=0.15,
+    default=0.0,
     type=float,
     show_default=True,
     help="Code/technical content ratio (0.0-1.0)",
@@ -2112,16 +2159,62 @@ def main(
         logger.info("✅ Analysis complete! Use this information to set optimal language ratios.")
         logger.info("💡 Example usage with ratios:")
 
-        # Suggest example ratios based on available data
-        if 'languages' in analysis:
+        # Generate balanced ratios based on available data that sum to 1.0
+        if 'languages' in analysis and analysis['languages']:
             total_gb = analysis['total_size_gb']
             example_target = f"{total_gb:.0f}GB" if target_data_size is None else target_data_size
-            logger.info(f"   python {sys.argv[0]} --target-data-size {example_target} \\")
-            for lang, info in sorted(analysis['languages'].items(), key=lambda x: x[1]['size_gb'], reverse=True):
-                suggested_ratio = min(0.40, info['percentage'] / 100 * 1.5)  # Cap at 40%, scale by 1.5x
-                if suggested_ratio >= 0.05:  # Only show if >= 5%
-                    logger.info(f"     --{lang.lower()}-ratio {suggested_ratio:.2f} \\")
-            logger.info(f"     --vocab-size {max(8000, min(128000, int(total_gb * 1500)))} # ~1.5K vocab per GB (research-based optimal ratio)")
+
+            # Calculate balanced ratios that sum to 1.0
+            available_languages = analysis['languages']
+            num_languages = len(available_languages)
+            normalized_ratios = {}
+
+            for lang, info in available_languages.items():
+                # Blend actual percentage with uniform distribution for balance
+                actual_ratio = info['percentage'] / 100
+                uniform_ratio = 1.0 / num_languages
+                # 70% actual data, 30% uniform balance
+                blended_ratio = actual_ratio * 0.7 + uniform_ratio * 0.3
+                normalized_ratios[lang] = blended_ratio
+
+            # Normalize to ensure exact sum of 1.0
+            total_ratio = sum(normalized_ratios.values())
+            for lang in normalized_ratios:
+                normalized_ratios[lang] /= total_ratio
+
+            # Generate working example command with clean copy-pasteable version
+            logger.info("💡 Example usage with balanced ratios:")
+
+            # Build command parts
+            command_parts = [f"python {sys.argv[0]} --target-data-size {example_target}"]
+            for lang, ratio in sorted(normalized_ratios.items(), key=lambda x: x[1], reverse=True):
+                command_parts.append(f"--{lang.lower()}-ratio {ratio:.2f}")
+            command_parts.append(f"--vocab-size {max(8000, min(128000, int(total_gb * 1500)))}")
+
+            # Show in logs with backslashes
+            backslash = "\\"
+            logger.info(f"   {command_parts[0]} {backslash}")
+            for part in command_parts[1:-1]:
+                logger.info(f"     {part} {backslash}")
+            logger.info(f"     {command_parts[-1]} # ~1.5K vocab per GB (research-based optimal ratio)")
+
+            # Also print a clean copy-pasteable version
+            print("\n" + "="*60)
+            print("📋 COPY-PASTEABLE COMMAND:")
+            print("="*60)
+            print(" \\\n  ".join(command_parts))
+            print("="*60)
+            print(" \
+  ".join(command_parts))
+            print("="*60)
+            command_parts = [f"python {sys.argv[0]} --target-data-size {example_target}"]
+            for lang, ratio in sorted(normalized_ratios.items(), key=lambda x: x[1], reverse=True):
+                command_parts.append(f"--{lang.lower()}-ratio {ratio:.2f}")
+            command_parts.append(f"--vocab-size {max(8000, min(128000, int(total_gb * 1500)))}")
+
+            print(" \
+  ".join(command_parts))
+            print("="*60)
 
         sys.exit(0)  # Exit successfully after analysis
 
