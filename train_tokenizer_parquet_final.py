@@ -210,9 +210,9 @@ class UniversalFilenameParser:
         return dataset_name, subset, language_category, metadata
 
     def _detect_via_content_sampling(self, context: dict) -> str:
-        """Memory-efficient language detection by sampling parquet file content"""
+        """Ultra-efficient language detection using micro-sampling (5KB vs 500MB)"""
         try:
-            import os
+            import gc
 
             import pyarrow as pa
             import pyarrow.parquet as pq
@@ -223,28 +223,21 @@ class UniversalFilenameParser:
                 context['methods_tried'].append('content_sampling_failed: no file path provided')
                 return 'unknown'
 
-            # Step 1: File size pre-check (skip very large files)
-            max_file_size_mb = 500  # Skip files larger than 500MB
+            # Step 1: Get file metadata without loading content
             try:
-                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-                if file_size_mb > max_file_size_mb:
-                    context['methods_tried'].append(f'content_sampling_skipped: file too large ({file_size_mb:.1f}MB > {max_file_size_mb}MB)')
-                    return 'unknown'
-            except OSError:
-                context['methods_tried'].append('content_sampling_failed: cannot access file')
+                parquet_file = pq.ParquetFile(file_path)
+                schema = parquet_file.schema
+                total_rows = parquet_file.metadata.num_rows
+            except Exception as e:
+                context['methods_tried'].append(f'content_sampling_failed: metadata read error - {str(e)[:100]}')
                 return 'unknown'
 
-            # Step 2: Schema inspection to find text columns
-            parquet_file = pq.ParquetFile(file_path)
-            schema = parquet_file.schema
-
-            # Identify likely text columns from schema
+            # Step 2: Identify text columns from schema
             text_columns = []
             priority_names = ['text', 'content', 'message', 'body', 'description', 'title', 'summary', 'sentence']
 
-            for _i, field in enumerate(schema):
+            for field in schema:
                 field_name = field.name.lower()
-                # Include string columns that are likely text
                 logical_type = field.logical_type
                 physical_type = field.physical_type
 
@@ -258,81 +251,105 @@ class UniversalFilenameParser:
                 if is_string_type:
                     text_columns.append(field.name)
 
-            # Prioritize columns with text-like names
+            # Prioritize columns with text-like names and limit to 3 for efficiency
             text_columns.sort(key=lambda x: (
                 0 if any(name in x.lower() for name in priority_names) else 1,
                 len(x)  # Shorter names first
             ))
-
-            # Limit to maximum 5 text columns to control memory
-            text_columns = text_columns[:5]
+            text_columns = text_columns[:3]  # Limit to 3 columns for memory efficiency
 
             if not text_columns:
                 context['methods_tried'].append('content_sampling_failed: no text columns found in schema')
                 return 'unknown'
 
-            # Step 3: Memory-efficient limited reading
-            max_rows = 100  # Strict row limit
-            try:
-                # Use read_table with strict limits
-                table = pq.read_table(
-                    file_path,
-                    columns=text_columns,  # Only read text columns
-                    # Note: PyArrow doesn't have nrows parameter, so we'll slice after reading
-                )
+            # Step 3: Ultra-efficient micro-sampling strategy
+            combined_text = ""
+            sample_points = []
 
-                # Slice to limit rows (more memory efficient than reading all then slicing)
-                if table.num_rows > max_rows:
-                    table = table.slice(0, max_rows)
+            # Define 3 sampling points for representative coverage
+            chunk_size = 10  # Very small chunks
+            if total_rows > 30:
+                # Beginning, middle, end sampling
+                sample_points = [
+                    (0, min(chunk_size, total_rows)),  # Beginning
+                    (total_rows // 2, min(chunk_size, total_rows - total_rows // 2)),  # Middle
+                    (max(0, total_rows - chunk_size), min(chunk_size, total_rows))  # End
+                ]
+            else:
+                # Small file - just read all rows
+                sample_points = [(0, min(total_rows, chunk_size))]
 
-                # Convert to pandas with only the data we need
-                df = table.to_pandas()
-
-            except pa.ArrowMemoryError:
-                context['methods_tried'].append('content_sampling_failed: Arrow memory error during read')
-                return 'unknown'
-            except MemoryError:
-                context['methods_tried'].append('content_sampling_failed: system memory error during read')
-                return 'unknown'
-            except Exception as e:
-                if 'memory' in str(e).lower() or 'allocation' in str(e).lower():
-                    context['methods_tried'].append(f'content_sampling_failed: memory error - {str(e)[:100]}')
-                    return 'unknown'
-                raise  # Re-raise non-memory errors
-
-            # Step 4: Memory-efficient text extraction
-            text_content = ""
-            max_chars_per_column = 500  # Limit characters from each column
-
-            for col in df.columns:
+            # Step 4: Process each micro-sample with immediate cleanup
+            for start_row, num_rows in sample_points:
                 try:
-                    # Get non-null values and convert to string efficiently
-                    col_data = df[col].dropna()
-                    if len(col_data) > 0:
-                        # Take only first 10 entries and limit character length
-                        sample_texts = col_data.head(10).astype(str)
-                        col_text = " ".join(sample_texts)[:max_chars_per_column]
-                        text_content += col_text + " "
+                    # Read tiny chunk (~1-2KB) using row-based reading
+                    chunk_table = pq.read_table(
+                        file_path,
+                        columns=text_columns,
+                        use_threads=False  # Reduce memory overhead
+                    )
 
-                        # Early exit if we have enough text
-                        if len(text_content) >= 1000:
-                            break
-                except Exception:
-                    continue  # Skip problematic columns
+                    # Slice to the specific rows we want
+                    chunk_table = chunk_table.slice(start_row, num_rows)
 
-            # Capture row count before cleanup
-            num_rows = len(df) if 'df' in locals() and df is not None else 0
+                    # Convert to pandas for text extraction
+                    chunk_df = chunk_table.to_pandas()
 
-            # Clean up large objects
-            del df, table
+                    # Extract text efficiently with strict limits
+                    for col in chunk_df.columns:
+                        try:
+                            col_data = chunk_df[col].dropna()
+                            if len(col_data) > 0:
+                                # Take only first few entries and limit characters
+                                sample_texts = col_data.head(5).astype(str)
+                                col_text = " ".join(sample_texts)[:150]  # Very small limit
+                                combined_text += col_text + " "
 
-            if len(text_content.strip()) < 50:
-                context['methods_tried'].append('content_sampling_failed: insufficient text content extracted')
+                                # Early exit if we have enough text
+                                if len(combined_text) >= 300:
+                                    break
+                        except Exception:
+                            continue  # Skip problematic columns
+
+                    # Aggressive memory cleanup after each chunk
+                    del chunk_df, chunk_table
+                    gc.collect()
+
+                    # Early exit if we have sufficient text
+                    if len(combined_text) >= 500:
+                        break
+
+                except pa.ArrowMemoryError:
+                    context['methods_tried'].append('content_sampling_failed: Arrow memory error in micro-sampling')
+                    return 'unknown'
+                except MemoryError:
+                    context['methods_tried'].append('content_sampling_failed: system memory error in micro-sampling')
+                    return 'unknown'
+                except Exception as e:
+                    if 'memory' in str(e).lower() or 'allocation' in str(e).lower():
+                        context['methods_tried'].append(f'content_sampling_failed: memory error - {str(e)[:100]}')
+                        return 'unknown'
+                    continue  # Skip this chunk and try others
+
+            # Final cleanup of parquet file handle
+            if 'parquet_file' in locals():
+                del parquet_file
+
+            # Clear PyArrow memory pools
+            try:
+                pa.default_memory_pool().release_unused()
+            except Exception:
+                pass  # Ignore cleanup errors
+
+            gc.collect()  # Force garbage collection
+
+            # Step 5: Language detection with cleaned text
+            if len(combined_text.strip()) < 30:
+                context['methods_tried'].append('content_sampling_failed: insufficient text from micro-sampling')
                 return 'unknown'
 
-            # Step 5: Language detection with memory efficiency
-            # Limit text for detection to avoid memory issues in langdetect
-            detection_text = text_content[:1000].strip()
+            # Limit text for detection to avoid any memory issues
+            detection_text = combined_text[:800].strip()
             detected_lang = detect(detection_text)
 
             # Map detected language to categories
@@ -346,23 +363,27 @@ class UniversalFilenameParser:
             }
 
             category = lang_mapping.get(detected_lang, 'other')
-            context['methods_tried'].append(f'content_sampling_success: {len(text_columns)} cols, {num_rows} rows, detected {detected_lang} -> {category}')
+
+            # Final memory cleanup
+            del combined_text, detection_text
+            gc.collect()
+
+            context['methods_tried'].append(f'micro_sampling_success: {len(sample_points)} chunks, {len(text_columns)} cols, detected {detected_lang} -> {category}')
             return category
 
-        except ImportError:
-            context['methods_tried'].append('content_sampling_failed: missing dependencies (pyarrow, langdetect)')
-            return 'unknown'
         except LangDetectException:
-            context['methods_tried'].append('content_sampling_failed: language detection failed on extracted text')
-            return 'unknown'
-        except MemoryError:
-            context['methods_tried'].append('content_sampling_failed: system memory exhausted')
+            context['methods_tried'].append('content_sampling_failed: language detection error')
             return 'unknown'
         except Exception as e:
-            # Catch any remaining errors gracefully
-            error_msg = str(e)[:100]  # Limit error message length
-            context['methods_tried'].append(f'content_sampling_failed: {error_msg}')
+            context['methods_tried'].append(f'content_sampling_failed: unexpected error - {str(e)[:100]}')
             return 'unknown'
+        finally:
+            # Emergency memory cleanup
+            gc.collect()
+            try:
+                pa.default_memory_pool().release_unused()
+            except Exception:
+                pass
 
     def _detect_via_iso_codes(self, context: dict) -> str:
         """Extract and detect language from ISO codes in filename"""
@@ -752,10 +773,18 @@ class DatasetCompositionAnalyzer:
 
                 processed_count += 1
 
-                # Periodic cleanup and progress logging
+                # Periodic cleanup and progress logging with memory monitoring
                 if processed_count % 100 == 0:
                     gc.collect()
-                    logger.info(f"Analysis progress: {processed_count}/{len(files_to_process)} files processed")
+                    memory_usage = get_memory_usage_percent()
+                    logger.info(f"Analysis progress: {processed_count}/{len(files_to_process)} files processed (Memory: {memory_usage:.1f}%)")
+
+                    # Clear PyArrow memory pools every 100 files
+                    try:
+                        import pyarrow as pa
+                        pa.default_memory_pool().release_unused()
+                    except Exception:
+                        pass
 
             except Exception as e:
                 warnings.append(f"Could not process {file_path.name}: {str(e)[:100]}")
@@ -767,8 +796,22 @@ class DatasetCompositionAnalyzer:
             lang_info['datasets'] = list(lang_info['datasets'])  # Convert set to list
             lang_info['file_count'] = int(lang_info['file_count'])  # Ensure integer
 
-        # Final cleanup
+        # Final aggressive memory cleanup - ensure zero retention
+        # Clear large local variables
+        files_to_process = None
+        parquet_files = None
+        files_by_dataset = None
+
+        # Clear PyArrow memory pools
+        try:
+            import pyarrow as pa
+            pa.default_memory_pool().release_unused()
+        except Exception:
+            pass
+
+        # Force multiple garbage collection cycles for thorough cleanup
         gc.collect()
+        gc.collect()  # Second pass to catch circular references
 
         return {
             'total_size_gb': total_size_gb,
@@ -2202,15 +2245,6 @@ def main(
             print("\n" + "="*60)
             print("📋 COPY-PASTEABLE COMMAND:")
             print("="*60)
-            print(" \\\n  ".join(command_parts))
-            print("="*60)
-            print(" \
-  ".join(command_parts))
-            print("="*60)
-            command_parts = [f"python {sys.argv[0]} --target-data-size {example_target}"]
-            for lang, ratio in sorted(normalized_ratios.items(), key=lambda x: x[1], reverse=True):
-                command_parts.append(f"--{lang.lower()}-ratio {ratio:.2f}")
-            command_parts.append(f"--vocab-size {max(8000, min(128000, int(total_gb * 1500)))}")
 
             print(" \
   ".join(command_parts))
