@@ -1126,6 +1126,62 @@ def auto_detect_field(file_path):
     return "text"
 
 
+def sample_files_by_cumulative_size(file_paths, target_gb):
+    """
+    Sample files based on cumulative size rather than count.
+
+    Args:
+        file_paths: List of file paths to sample from
+        target_gb: Target cumulative size in GB
+
+    Returns:
+        tuple: (selected_file_paths, actual_gb_selected)
+    """
+    import os
+    import random
+
+    if not file_paths:
+        return [], 0.0
+
+    # Get file sizes and shuffle for randomness while maintaining reproducibility
+    file_info = []
+    for path in file_paths:
+        try:
+            file_size = os.path.getsize(path)
+            file_info.append((path, file_size))
+        except OSError:
+            # Skip files that can't be accessed
+            continue
+
+    if not file_info:
+        return [], 0.0
+
+    # Shuffle for randomness (random.seed already set in calling function)
+    random.shuffle(file_info)
+
+    selected_files = []
+    total_size = 0
+    target_bytes = target_gb * (1024 ** 3)
+
+    for file_path, file_size in file_info:
+        # If adding this file would exceed target and we already have files, stop
+        if total_size + file_size > target_bytes and selected_files:
+            break
+        selected_files.append(file_path)
+        total_size += file_size
+
+        # If we've reached or exceeded target, we're done
+        if total_size >= target_bytes:
+            break
+
+    # Always include at least one file (edge case handling)
+    if not selected_files and file_info:
+        selected_files.append(file_info[0][0])
+        total_size = file_info[0][1]
+
+    actual_gb = total_size / (1024 ** 3)
+    return selected_files, actual_gb
+
 def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user_language_ratios=None):
     """
     NEW DYNAMIC DISCOVERY SYSTEM: Discover parquet files and calculate optimal ratios from actual data
@@ -1234,7 +1290,103 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
         user_language_ratios
     )
 
-    # STEP 3: APPLY SAMPLING BASED ON CALCULATED RATIOS
+    # STEP 3: APPLY CATEGORY-LEVEL SHUFFLING FOR MEMORY SAFETY AND DATA QUALITY  
+    logger.info("=== APPLYING CATEGORY-LEVEL SHUFFLING ===")
+    
+    # Group all files by language category with shuffling
+    files_by_category = {}
+    category_info = {}
+    
+    for key, plan in sampling_plan.items():
+        # Skip non-dataset entries like '_warnings'
+        if not isinstance(key, tuple) or len(key) != 2:
+            continue
+        if not isinstance(plan, dict) or 'files' not in plan:
+            continue
+            
+        dataset, subset = key
+            
+        language = plan['language']
+        files = plan['files']
+        sampling_ratio = plan['sampling_ratio']
+        
+        if language not in files_by_category:
+            files_by_category[language] = []
+            category_info[language] = {
+                'total_files': 0,
+                'sampling_ratio': sampling_ratio,
+                'datasets': []
+            }
+            
+        files_by_category[language].extend(files)
+        category_info[language]['total_files'] += len(files)
+        category_info[language]['datasets'].append(f"{dataset}" + (f"/{subset}" if subset else ""))
+    
+    # Apply category-level sampling with shuffling for data quality
+    random.seed(42)  # Reproducible sampling
+    selected_files_by_category = {}
+    
+    for language, all_files in files_by_category.items():
+        if not all_files:
+            continue
+            
+        info = category_info[language]
+        total_files = len(all_files)
+        sampling_ratio = info['sampling_ratio']
+        
+        if sampling_ratio >= 1.0:
+            # Use all files - insufficient data case
+            selected_files = all_files
+            logger.info(f"Category {language.upper()}: Using all {total_files} files (insufficient data)")
+        else:
+            # Sample files based on ratio with shuffling
+            target_file_count = max(1, round(total_files * sampling_ratio))
+            random.shuffle(all_files)  # Shuffle for cross-dataset mixing
+            selected_files = all_files[:target_file_count]
+            logger.info(f"Category {language.upper()}: Sampled {len(selected_files)}/{total_files} files (ratio: {sampling_ratio:.3f})")
+            
+        selected_files_by_category[language] = selected_files
+    
+    # Update sampling_plan to only include files that were selected at category level
+    # This ensures memory safety by filtering out unselected files
+    updated_sampling_plan = {}
+    selected_files_set = set()
+    for files_list in selected_files_by_category.values():
+        selected_files_set.update(files_list)
+    
+    for key, plan in sampling_plan.items():
+        # Handle special entries like '_warnings'
+        if not isinstance(key, tuple) or len(key) != 2:
+            # Keep special entries like '_warnings'
+            updated_sampling_plan[key] = plan
+            continue
+        if not isinstance(plan, dict) or 'files' not in plan:
+            continue
+            
+        dataset, subset = key
+            
+        # Filter files to only include selected ones
+        original_files = plan['files']
+        filtered_files = [f for f in original_files if f in selected_files_set]
+        
+        if filtered_files:  # Only keep datasets that have selected files
+            updated_plan = plan.copy()
+            updated_plan['files'] = filtered_files
+            # Recalculate target GB based on actual selected files
+            if len(original_files) > 0:
+                file_ratio = len(filtered_files) / len(original_files)
+                updated_plan['target_gb'] = plan['target_gb'] * file_ratio
+            updated_sampling_plan[(dataset, subset)] = updated_plan
+    
+    # Replace sampling_plan with filtered version for memory safety
+    sampling_plan = updated_sampling_plan
+    
+    # Log memory safety summary
+    total_selected_files = sum(len(files) for files in selected_files_by_category.values())
+    total_original_files = sum(len(files) for files in files_by_category.values())
+    logger.info(f"Memory safety: Processing {total_selected_files}/{total_original_files} files")
+
+    # STEP 4: APPLY SAMPLING BASED ON CALCULATED RATIOS
     logger.info("=== APPLYING DYNAMIC SAMPLING ===")
 
     # Extract and display warnings first
@@ -1255,14 +1407,14 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
             continue
 
         available_files = plan['files']
-        target_files = plan['target_files']
 
-        # Apply sampling
-        if target_files < len(available_files):
-            sampled_files = random.sample(available_files, target_files)
-            logger.info(f"Sampled {dataset}" + (f" ({subset})" if subset else "") + f": {len(available_files)} -> {target_files} files ({plan['sampling_ratio']:.3f} ratio)")
-        else:
-            sampled_files = available_files
+        # Files have already been pre-selected by category-level shuffling
+        # Skip additional size-based sampling to avoid double-sampling
+        sampled_files = available_files
+        actual_gb_sampled = sum(os.path.getsize(f) for f in available_files) / (1024**3)
+        target_gb_for_dataset = plan['target_gb']
+        
+        logger.info(f"Using pre-selected {dataset}" + (f" ({subset})" if subset else "") + f": {len(sampled_files)} files ({actual_gb_sampled:.2f}GB from category-level selection)")
 
         # Store in final structure
         if dataset not in final_files:
@@ -1271,7 +1423,8 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
         subset_key = subset if subset else "main"
         final_files[dataset][subset_key] = sampled_files
 
-        total_sampled_gb += plan['target_gb']
+        # Use actual sampled size instead of target for accurate tracking
+        total_sampled_gb += actual_gb_sampled
 
     # Check if we're using all available data
     if abs(target_data_gb - total_discovered_gb) < 0.1:  # Within 0.1GB tolerance
@@ -1302,6 +1455,23 @@ def discover_local_parquet_files(target_data_gb=1500, enable_sampling=True, user
                 logger.info(f"Final: {len(files)} files for {dataset_name}: {size_gb:.2f} GB")
 
     logger.info(f"Final total: {final_total_gb:.1f}GB")
+
+    # Calculate expected total records and size for job planning
+    logger.info("=== EXPECTED PROCESSING SUMMARY ===")
+    total_expected_records = 0
+    total_expected_gb = 0.0
+
+    for _dataset_name, configs in grouped_files.items():
+        for _config, files in configs.items():
+            rows, size_gb = get_parquet_metadata(files)
+            if rows:
+                total_expected_records += rows
+            total_expected_gb += size_gb
+
+    if total_expected_records > 0:
+        logger.info(f"📊 EXPECTED TOTAL RECORDS: {total_expected_records:,} records to process")
+    logger.info(f"📊 EXPECTED TOTAL SIZE: {total_expected_gb:.1f}GB to process")
+
     return grouped_files
 
 
