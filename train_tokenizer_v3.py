@@ -1,4 +1,5 @@
 import os
+import re
 import time  # Sonny ---> Added for time tracking
 
 os.environ["HF_DATASETS_CACHE"] = "./datasets"
@@ -410,38 +411,35 @@ def initialize_embedding_matrix(tokenizer, embedding_dim=1024):
         raise
 
 
+def split_sentences(text):
+    return re.split(r'(?<=[.!?])\s+', text.strip())
+
 def batch_iterator(my_datasets, batch_size=10_000):
-    i_ds = 1
-    try:
-        for d in tqdm(my_datasets, desc="Processing Datasets"):
-            for record in tqdm(
-                d.dataset, desc=f"Processing dataset {d.dataset_name} ({i_ds})"
-            ):
-                log_memory_usage()
-                try:
-                    k = record.get(d.affected_field, "")
-                except AttributeError:
-                    continue  # skip malformed record
+    buffer = ""
+    for d in my_datasets:
+        for record in d.dataset:
+            try:
+                val = record.get(d.affected_field, "")
+            except Exception:
+                continue
 
-                s = ""
-                if isinstance(k, list):
-                    if len(k) == 0:
-                        continue
-                    if isinstance(k[0], list):  # e.g., list of lists
-                        for sublist in k:
-                            s = " ".join(sublist) if isinstance(sublist[0], str) else ""
-                    elif isinstance(k[0], str):  # list of strings
-                        s = " ".join(k)
-                elif isinstance(k, str):  # single string
-                    s = k
+            # Normalize
+            if isinstance(val, list):
+                val = " ".join(" ".join(sub) if isinstance(sub, list) else sub for sub in val if sub)
+            elif not isinstance(val, str):
+                continue
 
-                for p in range(0, len(s), batch_size):
-                    yield s[p : p + batch_size]
-            i_ds += 1
-    except Exception as e:
-        print(f"Error: {e}")
-        import IPython
-        IPython.embed()
+            for sentence in split_sentences(val):
+                if not sentence:
+                    continue
+                if len(buffer) + len(sentence) + 1 > batch_size:
+                    yield buffer.strip()
+                    buffer = sentence
+                else:
+                    buffer += " " + sentence
+
+    if buffer:
+        yield buffer.strip()
 
 
 def train_tokenizer(
