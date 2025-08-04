@@ -12,8 +12,7 @@ import click
 import numpy as np
 import psutil
 import torch
-from tokenizers import ByteLevelBPETokenizer, normalizers
-from tqdm import tqdm
+from tokenizers import Tokenizer, models, normalizers
 
 # from transformers import PreTrainedTokenizerFast
 from transformers import GPT2TokenizerFast
@@ -412,71 +411,31 @@ def initialize_embedding_matrix(tokenizer, embedding_dim=1024):
 
 
 def split_sentences(text):
-    """Splits text into sentences using punctuation as boundaries."""
-    return re.split(r'(?<=[.!?])\s+', text.strip())
+    return re.split(r"(?<=[.!?])\s+", text.strip())
 
 
-def flatten_text(val):
-    """
-    Flattens nested text inputs:
-    - str → returned as is
-    - list[str] → joined
-    - list[list[str]] → deeply joined
-    - skips dicts and other non-str values
-    """
-    if isinstance(val, str):
-        return val
-
-    if isinstance(val, list):
-        out = []
-        for item in val:
-            if isinstance(item, str):
-                out.append(item)
-            elif isinstance(item, list):
-                out.extend(str(sub) for sub in item if isinstance(sub, str))
-            # You may extract specific fields from dicts here if needed
-        return " ".join(out)
-
-    return ""  # fallback for unexpected types
-
-
-def batch_iterator(my_datasets, batch_size=10_000, log_mem=False):
-    """
-    Yields sentence-aware batches of text for tokenizer training.
-
-    Args:
-        my_datasets (list): List of dataset wrapper objects with `dataset`, `dataset_name`, and `affected_field`.
-        batch_size (int): Approximate number of characters per batch.
-        log_mem (bool): Whether to log memory usage per record.
-    """
+def batch_iterator(my_datasets, batch_size=10_000):
     buffer = ""
-    for i_ds, d in enumerate(tqdm(my_datasets, desc="Processing Datasets"), start=1):
-        dataset_name = getattr(d, "dataset_name", f"Dataset-{i_ds}")
-        dataset = getattr(d, "dataset", [])
-        field = getattr(d, "affected_field", None)
-
-        if not field:
-            logging.warning(f"Skipping dataset {dataset_name}: missing 'affected_field'.")
-            continue
-
-        for record in tqdm(dataset, desc=f"Processing {dataset_name} ({i_ds})"):
-            if log_mem:
-                log_memory_usage()
-
+    for d in my_datasets:
+        for record in d.dataset:
             try:
-                val = record.get(field, "")
-            except Exception as e:
-                logging.warning(f"Malformed record in {dataset_name}: {e}")
+                val = record.get(d.affected_field, "")
+            except Exception:
                 continue
 
-            text = flatten_text(val)
-            if not text:
+            # Normalize
+            if isinstance(val, list):
+                val = " ".join(
+                    " ".join(sub) if isinstance(sub, list) else sub
+                    for sub in val
+                    if sub
+                )
+            elif not isinstance(val, str):
                 continue
 
-            for sentence in split_sentences(text):
+            for sentence in split_sentences(val):
                 if not sentence:
                     continue
-
                 if len(buffer) + len(sentence) + 1 > batch_size:
                     yield buffer.strip()
                     buffer = sentence
@@ -509,9 +468,10 @@ def train_tokenizer(
         logger.info(
             "Step 2: Train ByteLevelBPE tokenizer using datasets library multithreading"
         )
-        tokenizer = ByteLevelBPETokenizer()
+        # tokenizer = ByteLevelBPETokenizer()
+        tokenizer = Tokenizer(models.BPE())
 
-        norm_sequence = [normalizers.NFC()]
+        norm_sequence = [normalizers.NFKC()]
         # norm_sequence.append(normalizers.Lowercase())
         norm_sequence.append(normalizers.Replace("\t", " "))
         norm_sequence.append(normalizers.Replace(r"\s+", " "))
