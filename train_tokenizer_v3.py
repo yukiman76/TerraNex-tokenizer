@@ -459,29 +459,34 @@ def batch_iterator(my_datasets, batch_size=10_000, log_mem=False):
             logging.warning(f"Skipping dataset {dataset_name}: missing 'affected_field'.")
             continue
 
-        for record in tqdm(dataset, desc=f"Processing {dataset_name} ({i_ds})"):
-            if log_mem:
-                log_memory_usage()
+        try:
+            for record in tqdm(dataset, desc=f"Processing {dataset_name} ({i_ds})"):
+                if log_mem:
+                    log_memory_usage()
 
-            try:
-                val = record.get(field, "")
-            except Exception as e:
-                logging.warning(f"Malformed record in {dataset_name}: {e}")
-                continue
-
-            text = flatten_text(val)
-            if not text:
-                continue
-
-            for sentence in split_sentences(text):
-                if not sentence:
+                try:
+                    val = record.get(field, "")
+                except Exception as e:
+                    logging.warning(f"Malformed record in {dataset_name}: {e}")
                     continue
 
-                if len(buffer) + len(sentence) + 1 > batch_size:
-                    yield buffer.strip()
-                    buffer = sentence
-                else:
-                    buffer += " " + sentence
+                text = flatten_text(val)
+                if not text:
+                    continue
+
+                for sentence in split_sentences(text):
+                    if not sentence:
+                        continue
+
+                    if len(buffer) + len(sentence) + 1 > batch_size:
+                        yield buffer.strip()
+                        buffer = sentence
+                    else:
+                        buffer += " " + sentence
+        except Exception as e:
+            logging.warning(f"Dataset Failed :{dataset_name}: {e}")
+            logging.warning("skipping ....")
+            continue
 
     if buffer:
         yield buffer.strip()
