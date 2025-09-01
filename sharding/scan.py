@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Multilingual BPE tokenizer scanner - converts Parquet text files to character-level counts.
 Supports proper Unicode normalization and multilingual text preprocessing.
@@ -286,7 +288,10 @@ def _append_flush_chunk(
         try:
             os.close(fd)
         except Exception:
-            pass
+            try:
+                os.close(fd)  # One retry
+            except Exception:
+                logger.warning(f"Failed to close FD {fd} after retry")
         
         # Sort keys for deterministic output
         sorted_keys = sorted(local_map.keys())
@@ -845,17 +850,22 @@ def scan_shard_to_counts(
         if not local_map:
             return
         
+        # Get index with MAX_FLUSH_INDEX check
+        with flush_index_lock:
+            if flush_idx >= MAX_FLUSH_INDEX:
+                raise RuntimeError(
+                    f"flush_idx reached MAX_FLUSH_INDEX={MAX_FLUSH_INDEX}. "
+                    f"Aborting to avoid unbounded partials."
+                )
+            idx = flush_idx
+        
+        # Write outside index lock (with file I/O coordination)
         with flush_lock:
-            with flush_index_lock:
-                if flush_idx >= MAX_FLUSH_INDEX:
-                    raise RuntimeError(
-                        f"flush_idx reached MAX_FLUSH_INDEX={MAX_FLUSH_INDEX}. "
-                        f"Aborting to avoid unbounded partials."
-                    )
-                idx = flush_idx
-                flush_idx += 1
-            
             _append_flush_chunk(tmpdir, idx, local_map, logger)
+        
+        # Only increment after successful write
+        with flush_index_lock:
+            flush_idx += 1
     
     # Worker function
     def worker_loop(wid: int):
