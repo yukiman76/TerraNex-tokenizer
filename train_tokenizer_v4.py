@@ -459,7 +459,7 @@ def train_tokenizer(
         my_datasets = load_all_datasets(
             max_workers=max_workers,
             streaming=streaming,
-            sample_size=2_500_000,
+            sample_size=22_500_000,
             offline_mode=offline_mode,
             local_data_dir=local_data_dir,
         )
