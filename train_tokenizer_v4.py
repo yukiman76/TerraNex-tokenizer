@@ -16,7 +16,7 @@ from tokenizers import Tokenizer, models, normalizers
 
 # from transformers import PreTrainedTokenizerFast
 from transformers import GPT2TokenizerFast
-
+from tokenizers import Tokenizer, models, normalizers, trainers
 from datasets import Dataset, load_dataset, load_dataset_builder
 
 # Move logging configuration to after click options
@@ -468,26 +468,54 @@ def train_tokenizer(
         logger.info(
             "Step 2: Train ByteLevelBPE tokenizer using datasets library multithreading"
         )
-        # tokenizer = ByteLevelBPETokenizer()
+
+        # Initialize a BPE tokenizer model
         tokenizer = Tokenizer(models.BPE())
 
-        norm_sequence = [normalizers.NFKC()]
-        # norm_sequence.append(normalizers.Lowercase())
-        norm_sequence.append(normalizers.Replace("\t", " "))
-        norm_sequence.append(normalizers.Replace(r"\s+", " "))
-        norm_sequence.append(normalizers.Replace("\u00a0", " "))
-        # norm_sequence.append(normalizers.Replace(r"[\x00-\x09\x0B-\x1F\x7F]", ""))
-        norm_sequence.append(normalizers.Strip())
+        # Define the normalizers
+        norm_sequence = [
+            normalizers.NFKC(),
+            normalizers.Replace("\t", " "),
+            normalizers.Replace(r"\s+", " "),
+            normalizers.Replace("\u00a0", " "),
+            normalizers.Strip(),
+        ]
 
         tokenizer.normalizer = normalizers.Sequence(norm_sequence)
-        # The datasets library handles multithreading internally when we iterate through the datasets
+
+        # Instantiate the BPE trainer with the desired parameters
+        trainer = trainers.BpeTrainer(
+            vocab_size=vocab_size,
+            min_frequency=10,
+            special_tokens=list(SPECIAL_TOKENS.values()),
+        )
+
+        # Train the tokenizer using the trainer
         tokenizer.train_from_iterator(
             batch_iterator(my_datasets),
-            vocab_size=vocab_size,
-            min_frequency=3,  # TODO: we might need to change this
-            special_tokens=list(SPECIAL_TOKENS.values()),
+            trainer=trainer,
             show_progress=True,
         )
+        # tokenizer = ByteLevelBPETokenizer()
+        # tokenizer = Tokenizer(models.BPE())
+
+        # norm_sequence = [normalizers.NFKC()]
+        # # norm_sequence.append(normalizers.Lowercase())
+        # norm_sequence.append(normalizers.Replace("\t", " "))
+        # norm_sequence.append(normalizers.Replace(r"\s+", " "))
+        # norm_sequence.append(normalizers.Replace("\u00a0", " "))
+        # # norm_sequence.append(normalizers.Replace(r"[\x00-\x09\x0B-\x1F\x7F]", ""))
+        # norm_sequence.append(normalizers.Strip())
+
+        # tokenizer.normalizer = normalizers.Sequence(norm_sequence)
+        # # The datasets library handles multithreading internally when we iterate through the datasets
+        # tokenizer.train_from_iterator(
+        #     batch_iterator(my_datasets),
+        #     vocab_size=vocab_size,
+        #     min_frequency=3,  # TODO: we might need to change this
+        #     special_tokens=list(SPECIAL_TOKENS.values()),
+        #     show_progress=True,
+        # )
 
         os.makedirs(output_dir, exist_ok=True)
         tokenizer.save_model(output_dir)
