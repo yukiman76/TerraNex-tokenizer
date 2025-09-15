@@ -472,29 +472,28 @@ def train_tokenizer(
         # Initialize a BPE tokenizer model
         tokenizer = Tokenizer(models.BPE())
 
-        # Define the normalizers
+        # Define normalizers
         norm_sequence = [
             normalizers.NFKC(),
             normalizers.Replace("\t", " "),
             normalizers.Replace(r"\s+", " "),
             normalizers.Replace("\u00a0", " "),
-            normalizers.Strip(),
+            normalizers.Strip()
         ]
-
         tokenizer.normalizer = normalizers.Sequence(norm_sequence)
 
-        # Instantiate the BPE trainer with the desired parameters
+        # Create a trainer instance and set the training parameters there
         trainer = trainers.BpeTrainer(
             vocab_size=vocab_size,
-            min_frequency=10,
+            min_frequency=3,
             special_tokens=list(SPECIAL_TOKENS.values()),
+            show_progress=True,  # This is where 'show_progress' belongs
         )
 
-        # Train the tokenizer using the trainer
+        # Pass the configured trainer to the training method
         tokenizer.train_from_iterator(
             batch_iterator(my_datasets),
             trainer=trainer,
-            show_progress=True,
         )
         # tokenizer = ByteLevelBPETokenizer()
         # tokenizer = Tokenizer(models.BPE())
