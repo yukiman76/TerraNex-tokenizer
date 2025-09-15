@@ -485,7 +485,7 @@ def train_tokenizer(
         # Create a trainer instance and set the training parameters there
         trainer = trainers.BpeTrainer(
             vocab_size=vocab_size,
-            min_frequency=3,
+            min_frequency=10,
             special_tokens=list(SPECIAL_TOKENS.values()),
             show_progress=True,  # This is where 'show_progress' belongs
         )
