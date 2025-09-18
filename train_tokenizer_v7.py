@@ -406,11 +406,17 @@ class IncrementalBPETrainer:
         """Extract current vocab and merges from tokenizer"""
         # Get the model
         model = self.tokenizer.model
-        if hasattr(model, 'save'):
-            # Save to temporary files and read back
+
+        # For BPE model, we can directly access vocab and merges
+        if hasattr(model, 'get_vocab'):
+            # Get vocabulary directly from the model
+            self.vocab = model.get_vocab()
+        elif hasattr(model, 'save'):
+            # Alternative: save and reload to extract vocab
             import tempfile
             with tempfile.TemporaryDirectory() as tmpdir:
-                self.tokenizer.save_model(tmpdir)
+                # BPE model's save method creates vocab.json and merges.txt
+                model.save(tmpdir)
 
                 vocab_path = os.path.join(tmpdir, "vocab.json")
                 if os.path.exists(vocab_path):
@@ -771,7 +777,20 @@ def train_tokenizer_with_resume(vocab_size: int, output_dir: str, max_workers: i
 
         # Final save
         os.makedirs(output_dir, exist_ok=True)
-        tokenizer.save_model(output_dir)
+        # Save the tokenizer
+        tokenizer_path = os.path.join(output_dir, "tokenizer.json")
+        tokenizer.save(tokenizer_path)
+
+        # Also save vocab and merges separately if available
+        if hasattr(trainer, 'vocab') and trainer.vocab:
+            vocab_path = os.path.join(output_dir, "vocab.json")
+            with open(vocab_path, "w") as f:
+                json.dump(trainer.vocab, f, indent=2)
+
+        if hasattr(trainer, 'merges') and trainer.merges:
+            merges_path = os.path.join(output_dir, "merges.txt")
+            with open(merges_path, "w") as f:
+                f.write("\n".join(trainer.merges))
         logger.info(f"Tokenizer trained and saved to {output_dir}")
 
         # Save final checkpoint
