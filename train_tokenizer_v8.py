@@ -199,6 +199,7 @@ def memory_efficient_text_iterator(
                 "split": "train",
                 "streaming": streaming,
                 "cache_dir": "./datasets",
+                "trust_remote_code": True,  # Required for wikipedia, RedPajama, etc.
             }
             if lang:
                 kwargs["name"] = lang
